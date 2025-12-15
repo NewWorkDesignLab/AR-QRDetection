@@ -1,3 +1,10 @@
+/* eslint-disable no-undef */
+// A-Frame bringt THREE global mit; in Modulen explizit referenzieren:
+const THREE = (globalThis && globalThis.THREE) ? globalThis.THREE : null;
+if (!THREE) {
+  console.error('THREE nicht gefunden. A-Frame muss vor diesem Modul geladen werden.');
+}
+
 import { DeviceMotionTracker } from './device-motion-tracker.js';
 import { HandTracker } from './hand-tracking.js';
 
@@ -31,7 +38,7 @@ export class ARScene {
     ];
 
     this._fallbackVideo = null;
-    // Neu
+    this._videoEl = null;
     this._lostDebounceTimer = null;
     this._migratedToVirtual = false;
   }
@@ -45,7 +52,10 @@ export class ARScene {
 
     await this._ensureARVideoReady();
 
-    const video = document.querySelector('#arjs-video') || this._fallbackVideo;
+    // iOS: ggf. vor dem Start Motion-Permission anfragen (best effort)
+    await this._ensureMotionPermission();
+
+    const video = document.querySelector('#arjs-video') || this._fallbackVideo || this._videoEl;
     if (video) {
       try {
         await this.handTracker.init(video);
@@ -55,6 +65,8 @@ export class ARScene {
       } catch (e) {
         console.warn('HandTracking Fehler:', e);
       }
+    } else {
+      console.warn('Kein Video-Element gefunden – Handtracking deaktiviert.');
     }
 
     this.useDeviceMotion = await this.motionTracker.init();
@@ -107,6 +119,63 @@ export class ARScene {
     }
   }
 
+  async _ensureARVideoReady() {
+    // Wartet robust auf #arjs-video bzw. Fallback, bis Metadaten da sind
+    const findVideo = () => document.querySelector('#arjs-video') || this._fallbackVideo;
+    let v = findVideo();
+
+    if (!v) {
+      // Beobachte DOM, bis das Video erscheint
+      v = await new Promise(resolve => {
+        const obs = new MutationObserver(() => {
+          const cand = findVideo();
+          if (cand) { obs.disconnect(); resolve(cand); }
+        });
+        obs.observe(document.documentElement, { childList: true, subtree: true });
+        // Sicherheitsnetz: nach 2s aufgeben, wenn Fallback existiert
+        setTimeout(() => { if (this._fallbackVideo) { obs.disconnect(); resolve(this._fallbackVideo); } }, 2000);
+      });
+    }
+
+    if (!v) return null;
+
+    // iOS-Attribute
+    v.playsInline = true;
+    v.muted = true;
+
+    if (v.readyState >= 2) {
+      this._videoEl = v;
+      return v;
+    }
+    await new Promise(res => {
+      const onReady = () => { v.removeEventListener('loadedmetadata', onReady); v.removeEventListener('loadeddata', onReady); res(); };
+      v.addEventListener('loadedmetadata', onReady, { once: true });
+      v.addEventListener('loadeddata', onReady, { once: true });
+    });
+    this._videoEl = v;
+    return v;
+  }
+
+  async _ensureMotionPermission() {
+    try {
+      // iOS 13+
+      const DM = globalThis.DeviceMotionEvent;
+      const DO = globalThis.DeviceOrientationEvent;
+      if (DM && typeof DM.requestPermission === 'function') {
+        try {
+          const r = await DM.requestPermission();
+          if (r !== 'granted') console.warn('DeviceMotion Permission nicht erteilt.');
+        } catch (e) { console.warn('DeviceMotion Permission Fehler:', e); }
+      }
+      if (DO && typeof DO.requestPermission === 'function') {
+        try {
+          const r = await DO.requestPermission();
+          if (r !== 'granted') console.warn('DeviceOrientation Permission nicht erteilt.');
+        } catch (e) { console.warn('DeviceOrientation Permission Fehler:', e); }
+      }
+    } catch {}
+  }
+
   createVirtualMarker() {
     const scene = document.querySelector('a-scene');
     let vm = document.getElementById('virtual-marker');
@@ -114,6 +183,8 @@ export class ARScene {
       vm = document.createElement('a-entity');
       vm.id = 'virtual-marker';
       vm.setAttribute('visible', 'true'); // immer sichtbar
+      vm.setAttribute('position', '0 0 0');
+      vm.setAttribute('rotation', '0 0 0');
       vm.setAttribute('scale', '1 1 1');
       scene.appendChild(vm);
     }
@@ -127,12 +198,11 @@ export class ARScene {
     if (!this.realMarker) return;
     if (statusBox) statusBox.style.display = 'block';
 
-    // Echten Marker nie rendern (nur Pose-Quelle)
+    // Echten Marker nicht rendern (Pose-Quelle)
     this.realMarker.object3D.visible = false;
     this.virtualMarker.object3D.visible = true;
 
     this.realMarker.addEventListener('markerFound', () => {
-      // Debounce "lost" abbrechen
       if (this._lostDebounceTimer) {
         clearTimeout(this._lostDebounceTimer);
         this._lostDebounceTimer = null;
@@ -142,10 +212,10 @@ export class ARScene {
       this.markerLostTime = null;
       if (stateEl) { stateEl.textContent = 'Marker: sichtbar (Tracking)'; stateEl.style.color = '#0f0'; }
 
-      // Collider auf realer Struktur sicherstellen (falls noch nicht migriert)
+      // Collider sicherstellen
       this.realMarker.querySelectorAll('.interactable').forEach(el => this._ensureInteractionCollider(el));
 
-      // Welttransform vom echten Marker lesen und auf virtuellen setzen
+      // Welttransform übernehmen
       const wm = this.realMarker.object3D;
       const vm = this.virtualMarker.object3D;
 
@@ -160,7 +230,7 @@ export class ARScene {
       vm.quaternion.copy(quat);
       vm.scale.copy(scl);
 
-      // Modelle ein einziges Mal auf den virtuellen Marker verschieben (nicht klonen)
+      // Modelle auf den virtuellen Marker verschieben
       if (!this._migratedToVirtual) {
         this.moveEntitiesToVirtualMarker(this.realMarker);
         this._migratedToVirtual = true;
@@ -170,7 +240,6 @@ export class ARScene {
     });
 
     this.realMarker.addEventListener('markerLost', () => {
-      // Debounce: nur wirklich "lost" nach kurzer Zeit
       if (this._lostDebounceTimer) clearTimeout(this._lostDebounceTimer);
       this._lostDebounceTimer = setTimeout(() => {
         this._lostDebounceTimer = null;
@@ -182,7 +251,7 @@ export class ARScene {
         const wm = this.realMarker.object3D;
         const vm = this.virtualMarker.object3D;
 
-        // Welt-Pose des letzten echten Markers
+        // Welt-Pose einfrieren
         const markerWorldPos = new THREE.Vector3();
         const markerWorldQuat = new THREE.Quaternion();
         const markerWorldScale = new THREE.Vector3();
@@ -190,12 +259,11 @@ export class ARScene {
         wm.getWorldQuaternion(markerWorldQuat);
         wm.getWorldScale(markerWorldScale);
 
-        // Virtueller Marker einfrieren
         vm.position.copy(markerWorldPos);
         vm.quaternion.copy(markerWorldQuat);
         vm.scale.copy(markerWorldScale);
 
-        // Kamera-Pose zum Verlustzeitpunkt sichern
+        // Kamera-Pose sichern
         const cam = document.querySelector('[camera]');
         if (cam) {
           cam.object3D.getWorldPosition(this.cameraPositionAtLoss);
@@ -221,7 +289,6 @@ export class ARScene {
           this.deviceQuaternionAtLoss.copy(this.motionTracker.getQuaternion()).normalize();
         }
 
-        // Sichtbarkeit: wir bleiben immer auf virtuellem Marker
         this.virtualMarker.object3D.visible = true;
         this.realMarker.object3D.visible = false;
       }, 300);
@@ -231,7 +298,6 @@ export class ARScene {
   // Cursor je Hand
   onCursor({ handIndex, position }) {
     const i = handIndex ?? 0;
-    // Video-Normalized → Viewport → NDC (berücksichtigt Letterboxing)
     const v = this._videoToNDC(position);
     this.cursorNDC[i].set(v.x, v.y);
     this._updateHover(i);
@@ -254,7 +320,6 @@ export class ARScene {
     this.cursorNDC[i].copy(centerNDC);
 
     if (state === 'start') {
-      // Robuster Treffer: Center + Jitter (Radius ~14px)
       const hit = this._raycastAtNDCWithJitter(centerNDC, 14);
       if (!hit) return;
 
@@ -301,12 +366,33 @@ export class ARScene {
     return this._intersectFirstInteractable();
   }
 
-  // Raycast direkt an einer gegebenen NDC-Position (für Pinch-Center)
   _raycastAtNDC(ndc) {
     const sceneEl = document.querySelector('a-scene');
     if (!sceneEl?.camera) return null;
     this.raycaster.setFromCamera(ndc, sceneEl.camera);
     return this._intersectFirstInteractable();
+  }
+
+  _raycastAtNDCWithJitter(ndc, radiusPx=12) {
+    const hitCenter = this._raycastAtNDC(ndc);
+    if (hitCenter) return hitCenter;
+
+    const w = window.innerWidth || 1;
+    const h = window.innerHeight || 1;
+    const dx = (radiusPx * 2) / w;
+    const dy = (radiusPx * 2) / h;
+
+    const samples = [
+      [ 0,  0],
+      [ dx, 0], [-dx, 0], [0, dy], [0, -dy],
+      [ dx, dy], [ dx, -dy], [ -dx, dy], [ -dx, -dy]
+    ];
+    for (const [ox, oy] of samples) {
+      const p = new THREE.Vector2(ndc.x + ox, ndc.y + oy);
+      const hit = this._raycastAtNDC(p);
+      if (hit) return hit;
+    }
+    return null;
   }
 
   _intersectFirstInteractable() {
@@ -376,10 +462,17 @@ export class ARScene {
 
   _loop() {
     const tick = () => {
-      if (!this.markerVisible && this.virtualMarker?.object3D.visible) {
+      if (this.markerVisible && this.realMarker && this.virtualMarker) {
+        // Solange Marker sichtbar ist: Pose jedes Frame übernehmen
+        const rm = this.realMarker.object3D;
+        const vm = this.virtualMarker.object3D;
+        rm.updateMatrixWorld(true);
+        vm.position.copy(rm.getWorldPosition(new THREE.Vector3()));
+        vm.quaternion.copy(rm.getWorldQuaternion(new THREE.Quaternion()));
+        vm.scale.copy(rm.getWorldScale(new THREE.Vector3()));
+      } else if (!this.markerVisible && this.virtualMarker?.object3D.visible) {
         const vm = this.virtualMarker.object3D;
 
-        // Kamera aktuelle Weltpose lesen (liefert auf Mobile zumindest Orientation; Position oft 0, aber falls AR.js/A-Frame etwas liefert, nutzen wir es)
         const sceneEl = document.querySelector('a-scene');
         const camEl = sceneEl?.camera ? sceneEl.camera.el : document.querySelector('[camera]');
         const camObj = camEl?.object3D;
@@ -393,22 +486,19 @@ export class ARScene {
         }
 
         if (this.useDeviceMotion) {
-          // IMU Rotations-Delta auf Kamerarotation anwenden
           const qNow  = this.motionTracker.getQuaternion().clone().normalize();
           const qLoss = this.deviceQuaternionAtLoss.clone().normalize();
           const qDelta = qNow.multiply(qLoss.invert()).normalize();
-          const qOpp = qDelta.clone().invert(); // Geräteraum → Kameraraum Korrektur
+          const qOpp = qDelta.clone().invert();
           camQuatNow = camQuatNow.clone().multiply(qOpp).normalize();
         }
 
-        // Neue Kamera-Matrix aus aktueller Position + korrigierter Rotation
         const C1 = new THREE.Matrix4().compose(
           camPosNow,
           camQuatNow,
           new THREE.Vector3(1,1,1)
         );
 
-        // Marker = C1 * (C0^-1 * M0)
         const M1 = new THREE.Matrix4().copy(C1).multiply(this.T_camToMarkerAtLoss);
         const pos = new THREE.Vector3(), quat = new THREE.Quaternion(), scl = new THREE.Vector3();
         M1.decompose(pos, quat, scl);
@@ -432,6 +522,42 @@ export class ARScene {
       this._ensureInteractionCollider(c);
       this.interactableEntities.push(c);
     });
+  }
+
+  _ensureInteractionCollider(el) {
+    // No-Op für einfache Primitives; bei GLTF optionalen, transparenten Box-Collider ergänzen
+    if (!el || el.classList.contains('has-collider')) return;
+
+    if (el.hasAttribute('geometry')) {
+      el.classList.add('has-collider');
+      return;
+    }
+
+    if (el.hasAttribute('gltf-model')) {
+      const addBox = () => {
+        try {
+          const bbox = new THREE.Box3().setFromObject(el.object3D);
+          if (!bbox || !isFinite(bbox.min.x) || !isFinite(bbox.max.x)) return;
+          const size = new THREE.Vector3();
+          const center = new THREE.Vector3();
+          bbox.getSize(size);
+          bbox.getCenter(center);
+
+          const collider = document.createElement('a-entity');
+          collider.classList.add('hit-collider');
+          collider.setAttribute('geometry', `primitive: box; width: ${Math.max(0.01, size.x)}; height: ${Math.max(0.01, size.y)}; depth: ${Math.max(0.01, size.z)}`);
+          collider.setAttribute('material', 'color: #ffffff; opacity: 0.001; transparent: true; side: double');
+          collider.object3D.position.copy(center);
+          el.appendChild(collider);
+          el.classList.add('has-collider');
+        } catch {}
+      };
+      if (el.getObject3D('mesh')) {
+        addBox();
+      } else {
+        el.addEventListener('model-loaded', addBox, { once: true });
+      }
+    }
   }
 
   loadModelFromQr(urlOrNull) {
@@ -458,5 +584,15 @@ export class ARScene {
     model.setAttribute('scale', '1 1 1');
     anchor.appendChild(model);
     this._ensureInteractionCollider(model);
+  }
+
+  // Mappt Video-Normalized (0..1) auf NDC (-1..1), Y nach oben
+  _videoToNDC(p) {
+    if (!p) return new THREE.Vector2(0, 0);
+    const x = (p.x ?? 0);
+    const y = (p.y ?? 0);
+    const ndcX = x * 2 - 1;
+    const ndcY = -(y * 2 - 1);
+    return new THREE.Vector2(ndcX, ndcY);
   }
 }
