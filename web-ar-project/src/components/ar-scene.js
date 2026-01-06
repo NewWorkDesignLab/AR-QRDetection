@@ -33,9 +33,9 @@ export class ARScene {
     this.cursorNDC = [new THREE.Vector2(), new THREE.Vector2()];
     this.hoverEl = [null, null];
     this.originalColor = new Map();
-    this.grab = [
-      { active:false, target:null, startCenter:null, initialYaw:0 },
-      { active:false, target:null, startCenter:null, initialYaw:0 }
+      this.grab = [
+      { active:false, target:null, startCenter:null, upAtStart:null, baseWorldQuat:null, parentWorldInv:null },
+      { active:false, target:null, startCenter:null, upAtStart:null, baseWorldQuat:null, parentWorldInv:null }
     ];
 
     this._fallbackVideo = null;
@@ -400,14 +400,38 @@ export class ARScene {
     return null;
   }
 
-  _rotateStart(i, pinchCenterNorm) {
+  // Robust upright helper: takes a world quaternion and reorients it so that its up aligns with `up`
+  _makeUpright(worldQuat, up) {
+    const upN = up.clone().normalize();
+    const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(worldQuat);
+    // project forward onto plane orthogonal to up
+    const fwdProj = fwd.clone().sub(upN.clone().multiplyScalar(fwd.dot(upN)));
+    if (fwdProj.lengthSq() < 1e-6) fwdProj.set(1, 0, 0); // fallback if parallel
+    fwdProj.normalize();
+    const right = new THREE.Vector3().crossVectors(upN, fwdProj).normalize();
+    const fwdOrtho = new THREE.Vector3().crossVectors(right, upN).normalize();
+    const m = new THREE.Matrix4().makeBasis(right, upN, fwdOrtho);
+    return new THREE.Quaternion().setFromRotationMatrix(m).normalize();
+  }
+
+_rotateStart(i, pinchCenterNorm) {
     const target = this.currentModel;
     if (!target) return;
+
+    const parent = target.object3D.parent;
+    const parentInv = parent ? parent.matrixWorld.clone().invert() : new THREE.Matrix4();
+
+    const up = new THREE.Vector3(0, 1, 0);
+
+    const baseWorldQuatRaw = target.object3D.getWorldQuaternion(new THREE.Quaternion());
+    const baseWorldQuat = this._makeUpright(baseWorldQuatRaw, up);
 
     this.grab[i].active = true;
     this.grab[i].target = target;
     this.grab[i].startCenter = { x: pinchCenterNorm.x ?? 0.5, y: pinchCenterNorm.y ?? 0.5 };
-    this.grab[i].initialYaw = target.object3D.rotation.y;
+    this.grab[i].upAtStart = up;
+    this.grab[i].baseWorldQuat = baseWorldQuat;
+    this.grab[i].parentWorldInv = parentInv;
 
     this._ensureOriginalColor(target);
     target.setAttribute('color', '#ff9500');
@@ -415,18 +439,39 @@ export class ARScene {
 
   _rotateUpdate(i, pinchCenterNorm) {
     const g = this.grab[i];
-    if (!g.active || !g.target || !g.startCenter) return;
+    if (!g.active || !g.target || !g.startCenter || !g.baseWorldQuat || !g.parentWorldInv || !g.upAtStart) return;
 
-    const dx = (pinchCenterNorm?.x ?? 0.5) - g.startCenter.x; // horizontal drag
-    const angleDelta = dx * Math.PI * 2 * .8;               // Faktor 1.2 anpassbar
-    g.target.object3D.rotation.y = g.initialYaw + angleDelta;
+    const dx = (pinchCenterNorm?.x ?? 0.5) - g.startCenter.x;
+    const angleDelta = dx * Math.PI * 2 * 0.8; // Dreh-Geschwindigkeit anpassbar
+
+    const qDelta = new THREE.Quaternion().setFromAxisAngle(g.upAtStart, angleDelta);
+    const newWorldQuat = qDelta.multiply(g.baseWorldQuat).normalize();
+
+    // zurück in lokalen Raum
+    const localQuat = newWorldQuat.clone()
+      .premultiply(new THREE.Quaternion().setFromRotationMatrix(g.parentWorldInv));
+    g.target.object3D.quaternion.copy(localQuat).normalize();
   }
 
   _rotateEnd(i) {
     if (this.grab[i].active && this.grab[i].target) {
       this._restoreOriginalColor(this.grab[i].target);
     }
-    this.grab[i] = { active:false, target:null, startCenter:null, initialYaw:0 };
+    this.grab[i] = { active:false, target:null, startCenter:null, upAtStart:null, baseWorldQuat:null, parentWorldInv:null };
+  }
+
+  _snapUpwards(obj3D, upVec) {
+    const up = upVec.clone().normalize();
+    // aktuelle Vorwärtsrichtung bestimmen
+    const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(obj3D.quaternion).normalize();
+    // falls parallel, Fallback
+    if (Math.abs(fwd.dot(up)) > 0.98) fwd.set(1, 0, 0);
+
+    const right = new THREE.Vector3().crossVectors(up, fwd).normalize();
+    const fwdOrtho = new THREE.Vector3().crossVectors(right, up).normalize();
+
+    const m = new THREE.Matrix4().makeBasis(right, up, fwdOrtho);
+    obj3D.quaternion.setFromRotationMatrix(m).normalize();
   }
 
   _findAnchorNode(el) {
