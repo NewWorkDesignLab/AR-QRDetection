@@ -19,6 +19,7 @@ export class ARScene {
     this.markerLostTime = null;
     this.interactableEntities = [];
     this.useDeviceMotion = false;
+    this.currentModel = null;
 
     // Verlust-Puffer
     this.cameraPositionAtLoss = new THREE.Vector3();
@@ -33,8 +34,8 @@ export class ARScene {
     this.hoverEl = [null, null];
     this.originalColor = new Map();
     this.grab = [
-      { active:false, target:null, offset:new THREE.Vector3(), plane:new THREE.Plane() },
-      { active:false, target:null, offset:new THREE.Vector3(), plane:new THREE.Plane() }
+      { active:false, target:null, startCenter:null, initialYaw:0 },
+      { active:false, target:null, startCenter:null, initialYaw:0 }
     ];
 
     this._fallbackVideo = null;
@@ -235,7 +236,7 @@ export class ARScene {
         this.moveEntitiesToVirtualMarker(this.realMarker);
         this._migratedToVirtual = true;
       }
-
+      this._setModelsVisible(true);
       if (this.useDeviceMotion) this.motionTracker.calibrate();
     });
 
@@ -301,7 +302,6 @@ export class ARScene {
     const v = this._videoToNDC(position);
     this.cursorNDC[i].set(v.x, v.y);
     this._updateHover(i);
-    if (this.grab[i].active) this._dragUpdate(i);
   }
 
   onPoke({ handIndex }) {
@@ -314,35 +314,21 @@ export class ARScene {
 
   onGrab({ handIndex, state, position, thumb, center }) {
     const i = handIndex ?? 0;
+    const pinchCenter = center ||
+      (thumb && position ? {
+        x: (position.x + thumb.x) * 0.5,
+        y: (position.y + thumb.y) * 0.5
+      } : position);
 
-    const pinchCenter = center || (thumb && position ? { x: (position.x + thumb.x) * 0.5, y: (position.y + thumb.y) * 0.5 } : position);
-    const centerNDC = this._videoToNDC(pinchCenter);
+    // fail-safe defaults
+    const pc = pinchCenter || { x: 0.5, y: 0.5 };
+
+    const centerNDC = this._videoToNDC(pc);
     this.cursorNDC[i].copy(centerNDC);
 
-    if (state === 'start') {
-      const hit = this._raycastAtNDCWithJitter(centerNDC, 14);
-      if (!hit) return;
-
-      this.grab[i].active = true;
-      this.grab[i].target = hit.el;
-
-      const anchor = this._findAnchorNode(hit.el);
-      const anchorUp = new THREE.Vector3(0,1,0).applyQuaternion(
-        anchor.object3D.getWorldQuaternion(new THREE.Quaternion())
-      ).normalize();
-      this.grab[i].plane.setFromNormalAndCoplanarPoint(anchorUp, hit.point.clone());
-
-      const worldPos = hit.el.object3D.getWorldPosition(new THREE.Vector3());
-      this.grab[i].offset.copy(hit.point).sub(worldPos);
-
-      this._ensureOriginalColor(hit.el);
-      hit.el.setAttribute('color', '#ff9500');
-    } else if (state === 'move') {
-      if (this.grab[i].active) this._dragUpdate(i);
-    } else if (state === 'end') {
-      if (this.grab[i].active && this.grab[i].target) this._restoreOriginalColor(this.grab[i].target);
-      this.grab[i] = { active:false, target:null, offset:new THREE.Vector3(), plane:new THREE.Plane() };
-    }
+    if (state === 'start') this._rotateStart(i, pc);
+    else if (state === 'move') this._rotateUpdate(i, pc);
+    else if (state === 'end') this._rotateEnd(i);
   }
 
   _updateHover(i) {
@@ -414,25 +400,33 @@ export class ARScene {
     return null;
   }
 
-  _dragUpdate(i) {
-    const sceneEl = document.querySelector('a-scene');
-    if (!sceneEl?.camera) return;
+  _rotateStart(i, pinchCenterNorm) {
+    const target = this.currentModel;
+    if (!target) return;
+
+    this.grab[i].active = true;
+    this.grab[i].target = target;
+    this.grab[i].startCenter = { x: pinchCenterNorm.x ?? 0.5, y: pinchCenterNorm.y ?? 0.5 };
+    this.grab[i].initialYaw = target.object3D.rotation.y;
+
+    this._ensureOriginalColor(target);
+    target.setAttribute('color', '#ff9500');
+  }
+
+  _rotateUpdate(i, pinchCenterNorm) {
     const g = this.grab[i];
-    if (!g.active || !g.target) return;
+    if (!g.active || !g.target || !g.startCenter) return;
 
-    this.raycaster.setFromCamera(this.cursorNDC[i], sceneEl.camera);
-    const p = new THREE.Vector3();
-    if (!this.raycaster.ray.intersectPlane(g.plane, p)) return;
+    const dx = (pinchCenterNorm?.x ?? 0.5) - g.startCenter.x; // horizontal drag
+    const angleDelta = dx * Math.PI * 2 * .8;               // Faktor 1.2 anpassbar
+    g.target.object3D.rotation.y = g.initialYaw + angleDelta;
+  }
 
-    const targetWorld = p.clone().sub(g.offset);
-    const parent = g.target.object3D.parent;
-    if (!parent) return;
-    const parentInv = new THREE.Matrix4().copy(parent.matrixWorld).invert();
-    targetWorld.applyMatrix4(parentInv);
-
-    const cur = g.target.object3D.position.clone();
-    cur.lerp(targetWorld, 0.45);
-    g.target.object3D.position.copy(cur);
+  _rotateEnd(i) {
+    if (this.grab[i].active && this.grab[i].target) {
+      this._restoreOriginalColor(this.grab[i].target);
+    }
+    this.grab[i] = { active:false, target:null, startCenter:null, initialYaw:0 };
   }
 
   _findAnchorNode(el) {
@@ -560,11 +554,23 @@ export class ARScene {
     }
   }
 
+  _setModelsVisible(flag) {
+    (this.virtualMarker || this.realMarker)
+      ?.querySelectorAll('.model-root')
+      .forEach(el => { el.object3D.visible = flag; });
+  }
+
   loadModelFromQr(urlOrNull) {
-    // Immer auf den virtuellen Anker arbeiten
     const anchor = this.virtualMarker || this.realMarker;
     if (!anchor) return;
+
     anchor.querySelectorAll('.model-root').forEach(n => n.remove());
+
+    const setActive = (el) => {
+      this.currentModel = el;
+      this._ensureInteractionCollider(el);
+      el.object3D.visible = false; // bleibt verborgen bis Marker sichtbar
+    };
 
     if (!urlOrNull) {
       const box = document.createElement('a-box');
@@ -573,9 +579,10 @@ export class ARScene {
       box.setAttribute('position', '0 0.5 0');
       box.setAttribute('scale', '0.5 0.5 0.5');
       anchor.appendChild(box);
-      this._ensureInteractionCollider(box);
+      setActive(box);
       return;
     }
+
     const model = document.createElement('a-entity');
     model.classList.add('interactable', 'model-root');
     model.setAttribute('gltf-model', urlOrNull);
@@ -583,7 +590,7 @@ export class ARScene {
     model.setAttribute('rotation', '0 0 0');
     model.setAttribute('scale', '1 1 1');
     anchor.appendChild(model);
-    this._ensureInteractionCollider(model);
+    setActive(model);
   }
 
   // Mappt Video-Normalized (0..1) auf NDC (-1..1), Y nach oben
