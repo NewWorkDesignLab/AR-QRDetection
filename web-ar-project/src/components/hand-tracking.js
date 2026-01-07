@@ -112,7 +112,7 @@ export class HandTracker {
               !(lm[12]?.y < lm[10]?.y) &&
               !(lm[16]?.y < lm[14]?.y) &&
               !(lm[20]?.y < lm[18]?.y);
-            if (indexExtended && othersFolded && speed > 0.12 && nowTs - this.lastPokeTs[i] > this.pokeCooldownMs) {
+            if (indexExtended && othersFolded && speed > 0.04 && nowTs - this.lastPokeTs[i] > this.pokeCooldownMs) {
               this.lastPokeTs[i] = nowTs;
               this._setGesture(i, 'poke');
               this.showPokeUntil[i] = nowTs + 450; // 450ms anzeigen

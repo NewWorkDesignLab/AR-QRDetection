@@ -321,15 +321,22 @@ export class ARScene {
     this._updateHover(i);
   }
 
-  onPoke({ handIndex }) {
-    const hit = this._raycast(handIndex ?? 0);
-    
-    // Toggle Info-Panel (auch ohne direkten Hit auf Modell)
+  onPoke({ handIndex, position }) {
+    // Wenn Panel offen → immer schließen
     if (this._infoPanelOpen) {
       this._closeInfoPanel();
-    } else {
-      this._openInfoPanel();
+      return;
     }
+    
+    // Wenn Panel zu → prüfe ob Modell existiert
+    if (!this.currentModel) return;
+    
+    // Optional: Raycast für visuelles Feedback
+    const ndc = this._videoToNDC(position);
+    
+    // Panel öffnen (mit oder ohne Hit, da Poke-Geste schon intentional ist)
+    this._openInfoPanel();
+    
   }
 
   onGrab({ handIndex, state, position, thumb, center }) {
