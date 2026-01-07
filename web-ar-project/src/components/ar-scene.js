@@ -47,6 +47,13 @@ export class ARScene {
 
     this._modelYaw = 0; // user-controlled yaw (from grab)
     this._rotationSensitivity = 0.8; // Faktor für Pinch-Rotation
+
+    this._infoPanelOpen = false;
+    this._currentModelInfo = {
+      title: 'Unbekanntes Modell',
+      description: 'Keine Beschreibung verfügbar.',
+      meta: {}
+    };
   }
 
   async init() {
@@ -79,6 +86,11 @@ export class ARScene {
     this.createVirtualMarker();
     this.setupMarkerPersistence();
     this._loop(); // Wichtig: bleibt erhalten für virtuellen Marker
+
+    // Info-Panel Close-Button
+    document.getElementById('info-close')?.addEventListener('click', () => {
+      this._closeInfoPanel();
+    });
   }
 
   _waitForARCamera(timeoutMs=4000) {
@@ -311,10 +323,13 @@ export class ARScene {
 
   onPoke({ handIndex }) {
     const hit = this._raycast(handIndex ?? 0);
-    if (!hit) return;
-    const el = hit.el;
-    const current = el.getAttribute('color') || '#4CC3D9';
-    el.setAttribute('color', current.toLowerCase() === '#4cc3d9' ? '#ff9500' : '#4cc3d9');
+    
+    // Toggle Info-Panel (auch ohne direkten Hit auf Modell)
+    if (this._infoPanelOpen) {
+      this._closeInfoPanel();
+    } else {
+      this._openInfoPanel();
+    }
   }
 
   onGrab({ handIndex, state, position, thumb, center }) {
@@ -580,8 +595,12 @@ export class ARScene {
     const anchor = this.virtualMarker || this.realMarker;
     if (!anchor) return;
 
+    // Remove loading label from BOTH markers
+    this.realMarker?.querySelectorAll('.loading-label').forEach(n => n.remove());
+    this.virtualMarker?.querySelectorAll('.loading-label').forEach(n => n.remove());
+    
+    // Remove old models
     anchor.querySelectorAll('.model-root').forEach(n => n.remove());
-    anchor.querySelectorAll('.loading-label').forEach(n => n.remove());
 
     const setActive = (el) => {
       this.currentModel = el;
@@ -632,5 +651,40 @@ export class ARScene {
     // Quaternion: nur Yaw um Up-Achse
     const qYaw = new THREE.Quaternion().setFromAxisAngle(up, yaw);
     el.object3D.quaternion.copy(qYaw).normalize();
+  }
+
+  _openInfoPanel() {
+    const panel = document.getElementById('info-panel');
+    const title = document.getElementById('info-title');
+    const desc = document.getElementById('info-description');
+    const meta = document.getElementById('info-meta');
+
+    if (!panel) return;
+
+    title.textContent = this._currentModelInfo.title;
+    desc.textContent = this._currentModelInfo.description;
+    
+    // Meta-Infos anzeigen
+    const metaObj = this._currentModelInfo.meta || {};
+    meta.innerHTML = Object.entries(metaObj)
+      .map(([k, v]) => `<div><strong>${k}:</strong> ${v}</div>`)
+      .join('');
+
+    panel.classList.remove('hidden');
+    this._infoPanelOpen = true;
+  }
+
+  _closeInfoPanel() {
+    const panel = document.getElementById('info-panel');
+    if (panel) panel.classList.add('hidden');
+    this._infoPanelOpen = false;
+  }
+
+  setModelInfo(info) {
+    this._currentModelInfo = {
+      title: info.title || 'Unbekanntes Modell',
+      description: info.description || 'Keine Beschreibung verfügbar.',
+      meta: info.meta || {}
+    };
   }
 }

@@ -37,18 +37,27 @@
       smoothCount="10"
       smoothTolerance="0.01"
       smoothThreshold="5">
-      <!-- Standardmodell (wird ersetzt nach QR) -->
-      <!--<a-box class="interactable model-root"
-             position="0 0.5 0"
-             rotation="0 45 0"
-             color="#4CC3D9"
-             scale="0.5 0.5 0.5"></a-box>-->
-
-      <!-- Loading Label (wird ersetzt nach QR/Modell-Load) -->
-    <a-entity class="loading-label"
-                position="0 0.3 0"
-                text="value: Loading...; color: #fff; align: center; width: 2; font: roboto"
-                look-at="[camera]"></a-entity>
+      
+      <!-- Loading Label mit Hintergrund -->
+      <a-entity class="loading-label" position="0 0.5 0" rotation="-90 0 0">
+        <!-- Hintergrund-Plane -->
+        <a-plane
+          color="#000"
+          opacity="0.7"
+          width="1.2"
+          height="0.4"
+          position="0 0 -0.03">
+        </a-plane>
+        <!-- Text -->
+        <a-text
+          value="Loading..."
+          color="#fff"
+          align="center"
+          width="4"
+          position="0 0 0">
+        </a-text>
+      </a-entity>
+      
     </a-marker>
 
     <a-entity camera></a-entity>
@@ -63,6 +72,14 @@
   <canvas id="hand-overlay"></canvas>
   <div id="gesture-status">L: - | R: -</div>
   <div class="grab-hint" id="grab-hint">Pinch (Daumen + Zeigefinger) zum Greifen</div>
+
+  <!-- Info Panel (wird bei Poke geöffnet) -->
+  <div id="info-panel" class="info-panel hidden">
+    <button id="info-close" class="info-close">✕</button>
+    <h2 id="info-title">Modell-Info</h2>
+    <p id="info-description">Beschreibung wird geladen...</p>
+    <div id="info-meta" class="info-meta"></div>
+  </div>
 
   <script type="module" src="./app.js"></script>
 </body>
