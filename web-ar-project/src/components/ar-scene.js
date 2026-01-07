@@ -42,14 +42,11 @@ export class ARScene {
     this._videoEl = null;
     this._lostDebounceTimer = null;
     this._migratedToVirtual = false;
-    this._uprightPending = false;
 
     this._lastMarkerVisible = false;
 
-    this._uprightRetryCount = 0;
-    this._maxUprightRetries = 5;
-
     this._modelYaw = 0; // user-controlled yaw (from grab)
+    this._rotationSensitivity = 0.8; // Faktor für Pinch-Rotation
   }
 
   async init() {
@@ -246,8 +243,6 @@ export class ARScene {
       }
       this._setModelsVisible(true);
       if (this.useDeviceMotion) this.motionTracker.calibrate();
-
-      this._uprightPending = true;
     });
 
     this.realMarker.addEventListener('markerLost', () => {
@@ -302,8 +297,6 @@ export class ARScene {
 
         this.virtualMarker.object3D.visible = true;
         this.realMarker.object3D.visible = false;
-
-        this._uprightPending = true;
       }, 300);
     });
   }
@@ -412,84 +405,6 @@ export class ARScene {
     return null;
   }
 
-  // Robust upright helper: takes a world quaternion and reorients it so that its up aligns with `up`
-  _makeUpright(worldQuat, up) {
-    const upN = up.clone().normalize();
-    const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(worldQuat);
-    // project forward onto plane orthogonal to up
-    const fwdProj = fwd.clone().sub(upN.clone().multiplyScalar(fwd.dot(upN)));
-    if (fwdProj.lengthSq() < 1e-6) fwdProj.set(1, 0, 0); // fallback if parallel
-    fwdProj.normalize();
-    const right = new THREE.Vector3().crossVectors(upN, fwdProj).normalize();
-    const fwdOrtho = new THREE.Vector3().crossVectors(right, upN).normalize();
-    const m = new THREE.Matrix4().makeBasis(right, upN, fwdOrtho);
-    return new THREE.Quaternion().setFromRotationMatrix(m).normalize();
-  }
-
-  _applyUprightTo(el) {
-    if (!el?.object3D) return false;
-
-    // World up: IMU gravity or fallback world Y
-    const up = this.motionTracker
-      ? new THREE.Vector3(0, -1, 0)
-          .applyQuaternion(this.motionTracker.getQuaternion())
-          .negate()
-          .normalize()
-      : new THREE.Vector3(0, 1, 0);
-
-    const parent = el.object3D.parent;
-    if (!parent) return false;
-
-    parent.updateMatrixWorld(true);
-    const parentInv = parent.matrixWorld.clone().invert();
-
-    const worldQ = el.object3D.getWorldQuaternion(new THREE.Quaternion());
-    const uprightQ = this._makeUpright(worldQ, up);
-    const localQ = uprightQ.clone().premultiply(new THREE.Quaternion().setFromRotationMatrix(parentInv));
-    el.object3D.quaternion.copy(localQ).normalize();
-
-    // Validate: check if object's local up aligns with world up
-    return this._validateUpright(el, up);
-  }
-
-  _validateUpright(el, worldUp) {
-    if (!el?.object3D) return false;
-
-    // Get object's current up vector in world space
-    const localUp = new THREE.Vector3(0, 1, 0);
-    const objWorldQuat = el.object3D.getWorldQuaternion(new THREE.Quaternion());
-    const objUp = localUp.applyQuaternion(objWorldQuat).normalize();
-
-    // Dot product: 1 = perfect alignment, 0 = perpendicular, -1 = opposite
-    const dot = objUp.dot(worldUp.clone().normalize());
-
-    // Threshold: cos(15°) ≈ 0.966
-    const isUpright = dot > 0.9;
-
-    if (!isUpright) {
-      console.warn(`⚠️ Upright validation failed: dot=${dot.toFixed(3)}`);
-    }
-    return isUpright;
-  }
-
-  _tryApplyUpright(el) {
-    if (!el) return;
-
-    const success = this._applyUprightTo(el);
-    if (success) {
-      this._uprightRetryCount = 0;
-      console.log('✅ Upright applied successfully');
-    } else if (this._uprightRetryCount < this._maxUprightRetries) {
-      this._uprightRetryCount++;
-      console.log(`🔄 Upright retry ${this._uprightRetryCount}/${this._maxUprightRetries}`);
-      // Retry after short delay (matrices may not be updated yet)
-      setTimeout(() => this._tryApplyUpright(el), 50);
-    } else {
-      console.warn('❌ Upright failed after max retries');
-      this._uprightRetryCount = 0;
-    }
-  }
-
   _rotateStart(i, pinchCenterNorm) {
     const target = this.currentModel;
     if (!target) return;
@@ -508,7 +423,7 @@ export class ARScene {
     if (!g.active || !g.target || !g.startCenter) return;
 
     const dx = (pinchCenterNorm?.x ?? 0.5) - g.startCenter.x;
-    const angleDelta = dx * Math.PI * 2 * 0.8;
+    const angleDelta = dx * Math.PI * 2 * this._rotationSensitivity;
 
     this._modelYaw = g.initialYaw + angleDelta;
     // Rotation wird in _loop angewendet
@@ -519,20 +434,6 @@ export class ARScene {
       this._restoreOriginalColor(this.grab[i].target);
     }
     this.grab[i] = { active:false, target:null, startCenter:null, initialYaw:0 };
-  }
-
-  _snapUpwards(obj3D, upVec) {
-    const up = upVec.clone().normalize();
-    // aktuelle Vorwärtsrichtung bestimmen
-    const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(obj3D.quaternion).normalize();
-    // falls parallel, Fallback
-    if (Math.abs(fwd.dot(up)) > 0.98) fwd.set(1, 0, 0);
-
-    const right = new THREE.Vector3().crossVectors(up, fwd).normalize();
-    const fwdOrtho = new THREE.Vector3().crossVectors(right, up).normalize();
-
-    const m = new THREE.Matrix4().makeBasis(right, up, fwdOrtho);
-    obj3D.quaternion.setFromRotationMatrix(m).normalize();
   }
 
   _findAnchorNode(el) {
@@ -680,6 +581,7 @@ export class ARScene {
     if (!anchor) return;
 
     anchor.querySelectorAll('.model-root').forEach(n => n.remove());
+    anchor.querySelectorAll('.loading-label').forEach(n => n.remove());
 
     const setActive = (el) => {
       this.currentModel = el;
@@ -707,10 +609,6 @@ export class ARScene {
     model.setAttribute('scale', '1 1 1');
     anchor.appendChild(model);
     model.addEventListener('model-loaded', () => {
-      // Wait for scene graph to settle
-      requestAnimationFrame(() => {
-        this._tryApplyUpright(model);
-      });
     }, { once: true });
     setActive(model);
   }
