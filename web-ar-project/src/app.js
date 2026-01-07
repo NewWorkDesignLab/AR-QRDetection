@@ -6,8 +6,7 @@ class App {
     this.arScene = new ARScene();
     this.modelMap = {
       // Beispiel-IDs
-      'chair-01': 'assets/models/chair.glb',
-      'lamp-01': 'assets/models/lamp.glb'
+      'items_test': 'assets/models/items.glb',
     };
     this.scanner = null;
     this._bindUI();

@@ -42,6 +42,14 @@ export class ARScene {
     this._videoEl = null;
     this._lostDebounceTimer = null;
     this._migratedToVirtual = false;
+    this._uprightPending = false;
+
+    this._lastMarkerVisible = false;
+
+    this._uprightRetryCount = 0;
+    this._maxUprightRetries = 5;
+
+    this._modelYaw = 0; // user-controlled yaw (from grab)
   }
 
   async init() {
@@ -238,6 +246,8 @@ export class ARScene {
       }
       this._setModelsVisible(true);
       if (this.useDeviceMotion) this.motionTracker.calibrate();
+
+      this._uprightPending = true;
     });
 
     this.realMarker.addEventListener('markerLost', () => {
@@ -292,6 +302,8 @@ export class ARScene {
 
         this.virtualMarker.object3D.visible = true;
         this.realMarker.object3D.visible = false;
+
+        this._uprightPending = true;
       }, 300);
     });
   }
@@ -414,24 +426,78 @@ export class ARScene {
     return new THREE.Quaternion().setFromRotationMatrix(m).normalize();
   }
 
-_rotateStart(i, pinchCenterNorm) {
+  _applyUprightTo(el) {
+    if (!el?.object3D) return false;
+
+    // World up: IMU gravity or fallback world Y
+    const up = this.motionTracker
+      ? new THREE.Vector3(0, -1, 0)
+          .applyQuaternion(this.motionTracker.getQuaternion())
+          .negate()
+          .normalize()
+      : new THREE.Vector3(0, 1, 0);
+
+    const parent = el.object3D.parent;
+    if (!parent) return false;
+
+    parent.updateMatrixWorld(true);
+    const parentInv = parent.matrixWorld.clone().invert();
+
+    const worldQ = el.object3D.getWorldQuaternion(new THREE.Quaternion());
+    const uprightQ = this._makeUpright(worldQ, up);
+    const localQ = uprightQ.clone().premultiply(new THREE.Quaternion().setFromRotationMatrix(parentInv));
+    el.object3D.quaternion.copy(localQ).normalize();
+
+    // Validate: check if object's local up aligns with world up
+    return this._validateUpright(el, up);
+  }
+
+  _validateUpright(el, worldUp) {
+    if (!el?.object3D) return false;
+
+    // Get object's current up vector in world space
+    const localUp = new THREE.Vector3(0, 1, 0);
+    const objWorldQuat = el.object3D.getWorldQuaternion(new THREE.Quaternion());
+    const objUp = localUp.applyQuaternion(objWorldQuat).normalize();
+
+    // Dot product: 1 = perfect alignment, 0 = perpendicular, -1 = opposite
+    const dot = objUp.dot(worldUp.clone().normalize());
+
+    // Threshold: cos(15°) ≈ 0.966
+    const isUpright = dot > 0.9;
+
+    if (!isUpright) {
+      console.warn(`⚠️ Upright validation failed: dot=${dot.toFixed(3)}`);
+    }
+    return isUpright;
+  }
+
+  _tryApplyUpright(el) {
+    if (!el) return;
+
+    const success = this._applyUprightTo(el);
+    if (success) {
+      this._uprightRetryCount = 0;
+      console.log('✅ Upright applied successfully');
+    } else if (this._uprightRetryCount < this._maxUprightRetries) {
+      this._uprightRetryCount++;
+      console.log(`🔄 Upright retry ${this._uprightRetryCount}/${this._maxUprightRetries}`);
+      // Retry after short delay (matrices may not be updated yet)
+      setTimeout(() => this._tryApplyUpright(el), 50);
+    } else {
+      console.warn('❌ Upright failed after max retries');
+      this._uprightRetryCount = 0;
+    }
+  }
+
+  _rotateStart(i, pinchCenterNorm) {
     const target = this.currentModel;
     if (!target) return;
-
-    const parent = target.object3D.parent;
-    const parentInv = parent ? parent.matrixWorld.clone().invert() : new THREE.Matrix4();
-
-    const up = new THREE.Vector3(0, 1, 0);
-
-    const baseWorldQuatRaw = target.object3D.getWorldQuaternion(new THREE.Quaternion());
-    const baseWorldQuat = this._makeUpright(baseWorldQuatRaw, up);
 
     this.grab[i].active = true;
     this.grab[i].target = target;
     this.grab[i].startCenter = { x: pinchCenterNorm.x ?? 0.5, y: pinchCenterNorm.y ?? 0.5 };
-    this.grab[i].upAtStart = up;
-    this.grab[i].baseWorldQuat = baseWorldQuat;
-    this.grab[i].parentWorldInv = parentInv;
+    this.grab[i].initialYaw = this._modelYaw;
 
     this._ensureOriginalColor(target);
     target.setAttribute('color', '#ff9500');
@@ -439,25 +505,20 @@ _rotateStart(i, pinchCenterNorm) {
 
   _rotateUpdate(i, pinchCenterNorm) {
     const g = this.grab[i];
-    if (!g.active || !g.target || !g.startCenter || !g.baseWorldQuat || !g.parentWorldInv || !g.upAtStart) return;
+    if (!g.active || !g.target || !g.startCenter) return;
 
     const dx = (pinchCenterNorm?.x ?? 0.5) - g.startCenter.x;
-    const angleDelta = dx * Math.PI * 2 * 0.8; // Dreh-Geschwindigkeit anpassbar
+    const angleDelta = dx * Math.PI * 2 * 0.8;
 
-    const qDelta = new THREE.Quaternion().setFromAxisAngle(g.upAtStart, angleDelta);
-    const newWorldQuat = qDelta.multiply(g.baseWorldQuat).normalize();
-
-    // zurück in lokalen Raum
-    const localQuat = newWorldQuat.clone()
-      .premultiply(new THREE.Quaternion().setFromRotationMatrix(g.parentWorldInv));
-    g.target.object3D.quaternion.copy(localQuat).normalize();
+    this._modelYaw = g.initialYaw + angleDelta;
+    // Rotation wird in _loop angewendet
   }
 
   _rotateEnd(i) {
     if (this.grab[i].active && this.grab[i].target) {
       this._restoreOriginalColor(this.grab[i].target);
     }
-    this.grab[i] = { active:false, target:null, startCenter:null, upAtStart:null, baseWorldQuat:null, parentWorldInv:null };
+    this.grab[i] = { active:false, target:null, startCenter:null, initialYaw:0 };
   }
 
   _snapUpwards(obj3D, upVec) {
@@ -501,29 +562,38 @@ _rotateStart(i, pinchCenterNorm) {
 
   _loop() {
     const tick = () => {
-      if (this.markerVisible && this.realMarker && this.virtualMarker) {
-        // Solange Marker sichtbar ist: Pose jedes Frame übernehmen
+      const wasVisible = this._lastMarkerVisible;
+      const isVisible = this.markerVisible;
+
+      if (isVisible && this.realMarker && this.virtualMarker) {
         const rm = this.realMarker.object3D;
         const vm = this.virtualMarker.object3D;
         rm.updateMatrixWorld(true);
-        vm.position.copy(rm.getWorldPosition(new THREE.Vector3()));
-        vm.quaternion.copy(rm.getWorldQuaternion(new THREE.Quaternion()));
-        vm.scale.copy(rm.getWorldScale(new THREE.Vector3()));
-      } else if (!this.markerVisible && this.virtualMarker?.object3D.visible) {
-        const vm = this.virtualMarker.object3D;
 
+        // Position und Scale vom Marker
+        vm.position.copy(rm.getWorldPosition(new THREE.Vector3()));
+        vm.scale.copy(rm.getWorldScale(new THREE.Vector3()));
+        // Rotation: Identity (Modell-Rotation wird separat gesetzt)
+        vm.quaternion.identity();
+
+        // Modell aufrecht + user yaw anwenden
+        if (this.currentModel) {
+          this._applyUprightWithYaw(this.currentModel, this._modelYaw);
+        }
+
+      } else if (!isVisible && this.virtualMarker?.object3D.visible) {
+        // IMU-Tracking: Position aus IMU, Rotation aufrecht + yaw
+        const vm = this.virtualMarker.object3D;
         const sceneEl = document.querySelector('a-scene');
         const camEl = sceneEl?.camera ? sceneEl.camera.el : document.querySelector('[camera]');
         const camObj = camEl?.object3D;
 
         let camPosNow = this.cameraPositionAtLoss.clone();
         let camQuatNow = this.cameraQuaternionAtLoss.clone();
-
         if (camObj) {
           camObj.getWorldPosition(camPosNow);
           camObj.getWorldQuaternion(camQuatNow).normalize();
         }
-
         if (this.useDeviceMotion) {
           const qNow  = this.motionTracker.getQuaternion().clone().normalize();
           const qLoss = this.deviceQuaternionAtLoss.clone().normalize();
@@ -531,22 +601,22 @@ _rotateStart(i, pinchCenterNorm) {
           const qOpp = qDelta.clone().invert();
           camQuatNow = camQuatNow.clone().multiply(qOpp).normalize();
         }
-
-        const C1 = new THREE.Matrix4().compose(
-          camPosNow,
-          camQuatNow,
-          new THREE.Vector3(1,1,1)
-        );
-
+        const C1 = new THREE.Matrix4().compose(camPosNow, camQuatNow, new THREE.Vector3(1,1,1));
         const M1 = new THREE.Matrix4().copy(C1).multiply(this.T_camToMarkerAtLoss);
         const pos = new THREE.Vector3(), quat = new THREE.Quaternion(), scl = new THREE.Vector3();
         M1.decompose(pos, quat, scl);
 
         vm.position.copy(pos);
-        vm.quaternion.copy(quat);
+        vm.quaternion.identity(); // Rotation separat
         vm.scale.copy(this.markerScaleAtLoss);
+
+        // Modell aufrecht + user yaw
+        if (this.currentModel) {
+          this._applyUprightWithYaw(this.currentModel, this._modelYaw);
+        }
       }
 
+      this._lastMarkerVisible = isVisible;
       requestAnimationFrame(tick);
     };
     tick();
@@ -614,7 +684,8 @@ _rotateStart(i, pinchCenterNorm) {
     const setActive = (el) => {
       this.currentModel = el;
       this._ensureInteractionCollider(el);
-      el.object3D.visible = false; // bleibt verborgen bis Marker sichtbar
+      this._modelYaw = 0; // reset yaw for new model
+      el.object3D.visible = this.markerVisible;
     };
 
     if (!urlOrNull) {
@@ -635,6 +706,12 @@ _rotateStart(i, pinchCenterNorm) {
     model.setAttribute('rotation', '0 0 0');
     model.setAttribute('scale', '1 1 1');
     anchor.appendChild(model);
+    model.addEventListener('model-loaded', () => {
+      // Wait for scene graph to settle
+      requestAnimationFrame(() => {
+        this._tryApplyUpright(model);
+      });
+    }, { once: true });
     setActive(model);
   }
 
@@ -646,5 +723,16 @@ _rotateStart(i, pinchCenterNorm) {
     const ndcX = x * 2 - 1;
     const ndcY = -(y * 2 - 1);
     return new THREE.Vector2(ndcX, ndcY);
+  }
+
+  _applyUprightWithYaw(el, yaw) {
+    if (!el?.object3D) return;
+
+    // World up: immer (0,1,0)
+    const up = new THREE.Vector3(0, 1, 0);
+
+    // Quaternion: nur Yaw um Up-Achse
+    const qYaw = new THREE.Quaternion().setFromAxisAngle(up, yaw);
+    el.object3D.quaternion.copy(qYaw).normalize();
   }
 }
