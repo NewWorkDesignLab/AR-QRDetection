@@ -28,13 +28,13 @@ export class HandTracker {
     this.lastPokeTs = [0, 0];
     this.pokeCooldownMs = 220;
 
-    // NEU: Pinch-Tap State
-    this.pinchStartTs = [0, 0];           // Wann Pinch begann
-    this.pinchStartPos = [null, null];    // Wo Pinch begann
-    this.pinchMoveDist = [0, 0];          // Wie weit bewegt während Pinch
-    this.lastPinchTapTs = [0, 0];         // Cooldown für Pinch-Tap
-    this.pinchTapCooldownMs = 400;        // Min. Zeit zwischen Taps
-    this.pinchConfirmFrames = [0, 0];     // Frames in Pinch-Zustand (Stabilität)
+    // Pinch-Tap State
+    this.pinchStartTs = [0, 0];
+    this.pinchStartPos = [null, null];
+    this.pinchMoveDist = [0, 0];
+    this.lastPinchTapTs = [0, 0];
+    this.pinchTapCooldownMs = 400;
+    this.pinchConfirmFrames = [0, 0];
 
     // Anzeigezustand pro Hand
     this.currentGesture = ['-', '-'];
@@ -91,7 +91,7 @@ export class HandTracker {
           if (thumb && tip) {
             const pinchDist = Math.hypot(thumb.x - tip.x, thumb.y - tip.y);
             const pinchThreshold = 0.045;
-            const releaseThreshold = 0.065; // Hysterese: Loslassen braucht mehr Abstand
+            const releaseThreshold = 0.065;
             
             const wasPinching = this.pinchState[i] === 'hold';
             const isPinching = pinchDist < pinchThreshold;
@@ -101,7 +101,7 @@ export class HandTracker {
             const center = { x: (tip.x + thumb.x) * 0.5, y: (tip.y + thumb.y) * 0.5 };
 
             if (!wasPinching && isPinching) {
-              // ===== PINCH START =====
+              // PINCH START
               this.pinchState[i] = 'hold';
               this.pinchStartTs[i] = nowTs;
               this.pinchStartPos[i] = { x: center.x, y: center.y };
@@ -111,10 +111,9 @@ export class HandTracker {
               this.triggerCallbacks('grab', { handIndex: i, handedness, state: 'start', position: tip, thumb, center, landmarks: lm });
             
             } else if (wasPinching && !isReleased) {
-              // ===== PINCH HOLD =====
+              // PINCH HOLD
               this.pinchConfirmFrames[i]++;
               
-              // Track Bewegung
               if (this.pinchStartPos[i]) {
                 const dx = center.x - this.pinchStartPos[i].x;
                 const dy = center.y - this.pinchStartPos[i].y;
@@ -124,7 +123,7 @@ export class HandTracker {
               this.triggerCallbacks('grab', { handIndex: i, handedness, state: 'move', position: tip, thumb, center, landmarks: lm });
             
             } else if (wasPinching && isReleased) {
-              // ===== PINCH END =====
+              // PINCH END
               const pinchDuration = nowTs - this.pinchStartTs[i];
               const movedDist = this.pinchMoveDist[i];
               const frames = this.pinchConfirmFrames[i];
@@ -134,34 +133,16 @@ export class HandTracker {
               this._setGesture(i, '-');
               this.triggerCallbacks('grab', { handIndex: i, handedness, state: 'end', position: tip, thumb, center, landmarks: lm });
               
-              // ===== PINCH-TAP Erkennung =====
-              // Bedingungen:
-              // 1. Kurz gehalten (100-350ms) - nicht zu kurz (Rauschen), nicht zu lang (Drag)
-              // 2. Kaum bewegt (< 0.03 = ~3% der Bildbreite)
-              // 3. Mindestens 3 Frames stabil im Pinch
-              // 4. Cooldown eingehalten
-              
-              const durationOk = pinchDuration > 100 && pinchDuration < 350;
-              const notMoved = movedDist < 0.03;
-              const stableEnough = frames >= 3;
-              
-              console.log(`🔍 Pinch-End Check [Hand ${i}]:`, {
-                duration: pinchDuration.toFixed(0) + 'ms',
-                moved: movedDist.toFixed(3),
-                frames,
-                durationOk,
-                notMoved,
-                stableEnough,
-                cooldownOk
-              });
+              // PINCH-TAP Check
+              const durationOk = pinchDuration > 80 && pinchDuration < 400;
+              const notMoved = movedDist < 0.035;
+              const stableEnough = frames >= 2;
               
               if (durationOk && notMoved && stableEnough && cooldownOk) {
                 this.lastPinchTapTs[i] = nowTs;
-                console.log('✅ Pinch-Tap erkannt!', { hand: i, duration: pinchDuration.toFixed(0) });
+                console.log('✅ Pinch-Tap!', { hand: i, duration: pinchDuration.toFixed(0) + 'ms' });
                 this._setGesture(i, 'tap');
-                setTimeout(() => {
-                  if (this.currentGesture[i] === 'tap') this._setGesture(i, '-');
-                }, 300);
+                setTimeout(() => { if (this.currentGesture[i] === 'tap') this._setGesture(i, '-'); }, 300);
                 this.triggerCallbacks('pinch-tap', { handIndex: i, handedness, position: center, landmarks: lm });
               }
             }
@@ -327,6 +308,25 @@ export class HandTracker {
         ctx.arc(tip.x * w, tip.y * h, 4, 0, Math.PI * 2);
         ctx.fillStyle = '#fff';
         ctx.fill();
+      }
+
+      // Gesten-Indikator zeichnen
+      if (this.currentGesture[i] !== '-') {
+        const wrist = lm[0];
+        if (wrist && this.octx) {
+          const x = wrist.x * this.overlay.width;
+          const y = wrist.y * this.overlay.height - 30;
+          
+          this.octx.font = 'bold 16px system-ui';
+          this.octx.textAlign = 'center';
+          
+          const gesture = this.currentGesture[i];
+          const colors = { pinch: '#ff9500', tap: '#00ff00', poke: '#00ccff' };
+          const labels = { pinch: '✊ GRAB', tap: '👆 TAP', poke: '👉 POKE' };
+          
+          this.octx.fillStyle = colors[gesture] || '#fff';
+          this.octx.fillText(labels[gesture] || gesture, x, y);
+        }
       }
     });
   }

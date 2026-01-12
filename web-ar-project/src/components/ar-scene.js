@@ -45,7 +45,10 @@ export class ARScene {
 
     this._lastMarkerVisible = false;
 
-    this._modelYaw = 0; // user-controlled yaw (from grab)
+    // Rotation State (Yaw + Pitch)
+    this._modelYaw = 0;   // Links/Rechts (Y-Achse)
+    this._modelPitch = 0; // Oben/Unten (X-Achse)
+    this._pitchLimit = Math.PI
     this._rotationSensitivity = 0.8; // Faktor für Pinch-Rotation
 
     this._infoPanelOpen = false;
@@ -61,7 +64,9 @@ export class ARScene {
       startX: 0,
       startY: 0,
       startYaw: 0,
-      lastTap: 0
+      startPitch: 0,
+      lastTap: 0,
+      singleTapTimer: null  // NEU: Timer für verzögerten Single-Tap
     };
   }
 
@@ -443,8 +448,12 @@ export class ARScene {
 
     this.grab[i].active = true;
     this.grab[i].target = target;
-    this.grab[i].startCenter = { x: pinchCenterNorm.x ?? 0.5, y: pinchCenterNorm.y ?? 0.5 };
+    this.grab[i].startCenter = { 
+      x: pinchCenterNorm.x ?? 0.5, 
+      y: pinchCenterNorm.y ?? 0.5 
+    };
     this.grab[i].initialYaw = this._modelYaw;
+    this.grab[i].initialPitch = this._modelPitch;
 
     this._ensureOriginalColor(target);
     target.setAttribute('color', '#ff9500');
@@ -455,17 +464,31 @@ export class ARScene {
     if (!g.active || !g.target || !g.startCenter) return;
 
     const dx = (pinchCenterNorm?.x ?? 0.5) - g.startCenter.x;
-    const angleDelta = dx * Math.PI * 2 * this._rotationSensitivity;
+    const dy = (pinchCenterNorm?.y ?? 0.5) - g.startCenter.y;
 
-    this._modelYaw = g.initialYaw + angleDelta;
-    // Rotation wird in _loop angewendet
+    // Horizontal → Yaw
+    const yawDelta = dx * Math.PI * 2 * this._rotationSensitivity;
+    this._modelYaw = g.initialYaw + yawDelta;
+
+    // Vertikal → Pitch (invertiert, weil Y nach unten wächst)
+    const pitchDelta = -dy * Math.PI * this._rotationSensitivity;
+    this._modelPitch = g.initialPitch + pitchDelta;
+    
+    // Pitch begrenzen (nicht komplett überkopf)
+    this._modelPitch = Math.max(-this._pitchLimit, Math.min(this._pitchLimit, this._modelPitch));
   }
 
   _rotateEnd(i) {
     if (this.grab[i].active && this.grab[i].target) {
       this._restoreOriginalColor(this.grab[i].target);
     }
-    this.grab[i] = { active:false, target:null, startCenter:null, initialYaw:0 };
+    this.grab[i] = { 
+      active: false, 
+      target: null, 
+      startCenter: null, 
+      initialYaw: 0, 
+      initialPitch: 0 
+    };
   }
 
   _findAnchorNode(el) {
@@ -509,9 +532,9 @@ export class ARScene {
         // Rotation: Identity (Modell-Rotation wird separat gesetzt)
         vm.quaternion.identity();
 
-        // Modell aufrecht + user yaw anwenden
+        // Modell-Rotation anwenden (Yaw + Pitch)
         if (this.currentModel) {
-          this._applyUprightWithYaw(this.currentModel, this._modelYaw);
+          this._applyRotation(this.currentModel, this._modelYaw, this._modelPitch);
         }
 
       } else if (!isVisible && this.virtualMarker?.object3D.visible) {
@@ -545,7 +568,7 @@ export class ARScene {
 
         // Modell aufrecht + user yaw
         if (this.currentModel) {
-          this._applyUprightWithYaw(this.currentModel, this._modelYaw);
+          this._applyRotation(this.currentModel, this._modelYaw, this._modelPitch);
         }
       }
 
@@ -622,7 +645,8 @@ export class ARScene {
     const setActive = (el) => {
       this.currentModel = el;
       this._ensureInteractionCollider(el);
-      this._modelYaw = 0; // reset yaw for new model
+      this._modelYaw = 0; // reset yaw
+      this._modelPitch = 0; // reset pitch
       el.object3D.visible = this.markerVisible;
     };
 
@@ -659,15 +683,31 @@ export class ARScene {
     return new THREE.Vector2(ndcX, ndcY);
   }
 
-  _applyUprightWithYaw(el, yaw) {
+  _applyRotation(el, yaw, pitch) {
     if (!el?.object3D) return;
 
-    // World up: immer (0,1,0)
-    const up = new THREE.Vector3(0, 1, 0);
-
-    // Quaternion: nur Yaw um Up-Achse
-    const qYaw = new THREE.Quaternion().setFromAxisAngle(up, yaw);
-    el.object3D.quaternion.copy(qYaw).normalize();
+    // Trackball-Style: Rotation akkumuliert sich
+    // Yaw und Pitch werden um FESTE Welt-Achsen angewendet
+    
+    const qYaw = new THREE.Quaternion().setFromAxisAngle(
+      new THREE.Vector3(0, 1, 0), // Welt-Y (vertikal)
+      yaw
+    );
+    
+    const qPitch = new THREE.Quaternion().setFromAxisAngle(
+      new THREE.Vector3(1, 0, 0), // Welt-X (horizontal)
+      pitch
+    );
+    
+    // Reihenfolge für intuitive Steuerung:
+    // Yaw * Pitch = Erst um Y drehen, dann um die NEUE X-Achse kippen
+    // Pitch * Yaw = Erst kippen, dann um WELT-Y drehen (Gimbal-Lock frei)
+    
+    // Für Bildschirm-paralleles Kippen: Pitch * Yaw
+    const combined = new THREE.Quaternion();
+    combined.multiplyQuaternions(qPitch, qYaw);
+    
+    el.object3D.quaternion.copy(combined).normalize();
   }
 
   _openInfoPanel() {
@@ -708,10 +748,6 @@ export class ARScene {
   _initTouchControls() {
     const canvas = document.querySelector('canvas') || document.body;
     
-    // Single Tap → Info-Panel öffnen/schließen (wie Poke)
-    // Drag horizontal → Yaw rotieren (wie Grab)
-    // Double Tap → Reset Rotation
-    
     let touchStartTime = 0;
     let touchMoved = false;
 
@@ -726,6 +762,7 @@ export class ARScene {
       this._touchState.startX = touch.clientX;
       this._touchState.startY = touch.clientY;
       this._touchState.startYaw = this._modelYaw;
+      this._touchState.startPitch = this._modelPitch;
       
       // Visual Feedback
       if (this.currentModel) {
@@ -746,10 +783,17 @@ export class ARScene {
         touchMoved = true;
       }
       
-      // Horizontal Drag → Yaw rotieren
+      // Drag → Rotation
       if (touchMoved && this.currentModel) {
-        const sensitivity = 0.01;
-        this._modelYaw = this._touchState.startYaw + dx * sensitivity;
+        const sensitivityX = 0.008; // Yaw
+        const sensitivityY = 0.006; // Pitch (etwas weniger sensitiv)
+        
+        // Horizontal → Yaw
+        this._modelYaw = this._touchState.startYaw + dx * sensitivityX;
+        
+        // Vertikal → Pitch (invertiert für intuitive Steuerung)
+        const newPitch = this._touchState.startPitch - dy * sensitivityY;
+        this._modelPitch = Math.max(-this._pitchLimit, Math.min(this._pitchLimit, newPitch));
       }
     }, { passive: true });
 
@@ -766,27 +810,38 @@ export class ARScene {
       
       // Tap Detection (kurz + keine Bewegung)
       if (!touchMoved && touchDuration < 300) {
-        // Double Tap Detection
-        if (now - this._touchState.lastTap < 400) {
-          // Double Tap → Reset Yaw
-          this._modelYaw = 0;
-          console.log('👆👆 Double Tap → Rotation zurückgesetzt');
-        } else {
-          // Single Tap → Toggle Info-Panel
-          console.log('👆 Single Tap → Info-Panel toggle');
-          if (this._infoPanelOpen) {
-            this._closeInfoPanel();
-          } else if (this.currentModel) {
-            this._openInfoPanel();
-          }
+        const timeSinceLastTap = now - this._touchState.lastTap;
+        
+        // Pending Single-Tap abbrechen falls vorhanden
+        if (this._touchState.singleTapTimer) {
+          clearTimeout(this._touchState.singleTapTimer);
+          this._touchState.singleTapTimer = null;
         }
-        this._touchState.lastTap = now;
+        
+        if (timeSinceLastTap < 350) {
+          // Double Tap erkannt!
+          this._modelYaw = 0;
+          this._modelPitch = 0;
+          console.log('👆👆 Double Tap → Rotation zurückgesetzt');
+          this._touchState.lastTap = 0; // Reset um Triple-Tap zu verhindern
+        } else {
+          // Möglicher Single Tap – warte ob Double-Tap kommt
+          this._touchState.lastTap = now;
+          this._touchState.singleTapTimer = setTimeout(() => {
+            this._touchState.singleTapTimer = null;
+            console.log('👆 Single Tap → Info-Panel toggle');
+            if (this._infoPanelOpen) {
+              this._closeInfoPanel();
+            } else if (this.currentModel) {
+              this._openInfoPanel();
+            }
+          }, 350); // Warte 350ms auf möglichen zweiten Tap
+        }
       }
       
       this._touchState.active = false;
     }, { passive: true });
 
-    // Touch Cancel (z.B. bei Anruf)
     canvas.addEventListener('touchcancel', () => {
       if (this.currentModel) {
         this._restoreOriginalColor(this.currentModel);
@@ -794,6 +849,6 @@ export class ARScene {
       this._touchState.active = false;
     }, { passive: true });
 
-    console.log('📱 Touch-Controls initialisiert');
+    console.log('📱 Touch-Controls initialisiert (Yaw + Pitch)');
   }
 }
