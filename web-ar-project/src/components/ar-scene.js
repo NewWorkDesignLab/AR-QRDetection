@@ -54,6 +54,15 @@ export class ARScene {
       description: 'Keine Beschreibung verfügbar.',
       meta: {}
     };
+
+    // Touch-State
+    this._touchState = {
+      active: false,
+      startX: 0,
+      startY: 0,
+      startYaw: 0,
+      lastTap: 0
+    };
   }
 
   async init() {
@@ -75,6 +84,8 @@ export class ARScene {
         this.handTracker.on('cursor', (d) => this.onCursor(d));
         this.handTracker.on('poke',   (d) => this.onPoke(d));
         this.handTracker.on('grab',   (d) => this.onGrab(d));
+        // Pinch-Tap → Info-Panel öffnen/schließen
+        this.handTracker.on('pinch-tap', (d) => this.onPinchTap(d));
       } catch (e) {
         console.warn('HandTracking Fehler:', e);
       }
@@ -91,6 +102,9 @@ export class ARScene {
     document.getElementById('info-close')?.addEventListener('click', () => {
       this._closeInfoPanel();
     });
+
+    // Touch-Events initialisieren
+    this._initTouchControls();
   }
 
   _waitForARCamera(timeoutMs=4000) {
@@ -322,21 +336,7 @@ export class ARScene {
   }
 
   onPoke({ handIndex, position }) {
-    // Wenn Panel offen → immer schließen
-    if (this._infoPanelOpen) {
-      this._closeInfoPanel();
-      return;
-    }
-    
-    // Wenn Panel zu → prüfe ob Modell existiert
-    if (!this.currentModel) return;
-    
-    // Optional: Raycast für visuelles Feedback
-    const ndc = this._videoToNDC(position);
-    
-    // Panel öffnen (mit oder ohne Hit, da Poke-Geste schon intentional ist)
-    this._openInfoPanel();
-    
+    //Poke Interaction logic here
   }
 
   onGrab({ handIndex, state, position, thumb, center }) {
@@ -356,6 +356,16 @@ export class ARScene {
     if (state === 'start') this._rotateStart(i, pc);
     else if (state === 'move') this._rotateUpdate(i, pc);
     else if (state === 'end') this._rotateEnd(i);
+  }
+
+  onPinchTap({ handIndex, position }) {
+    console.log('📱 Pinch-Tap erkannt → Toggle Info-Panel');
+    
+    if (this._infoPanelOpen) {
+      this._closeInfoPanel();
+    } else if (this.currentModel) {
+      this._openInfoPanel();
+    }
   }
 
   _updateHover(i) {
@@ -693,5 +703,97 @@ export class ARScene {
       description: info.description || 'Keine Beschreibung verfügbar.',
       meta: info.meta || {}
     };
+  }
+
+  _initTouchControls() {
+    const canvas = document.querySelector('canvas') || document.body;
+    
+    // Single Tap → Info-Panel öffnen/schließen (wie Poke)
+    // Drag horizontal → Yaw rotieren (wie Grab)
+    // Double Tap → Reset Rotation
+    
+    let touchStartTime = 0;
+    let touchMoved = false;
+
+    canvas.addEventListener('touchstart', (e) => {
+      if (e.touches.length !== 1) return;
+      
+      const touch = e.touches[0];
+      touchStartTime = performance.now();
+      touchMoved = false;
+      
+      this._touchState.active = true;
+      this._touchState.startX = touch.clientX;
+      this._touchState.startY = touch.clientY;
+      this._touchState.startYaw = this._modelYaw;
+      
+      // Visual Feedback
+      if (this.currentModel) {
+        this._ensureOriginalColor(this.currentModel);
+        this.currentModel.setAttribute('color', '#ff9500');
+      }
+    }, { passive: true });
+
+    canvas.addEventListener('touchmove', (e) => {
+      if (!this._touchState.active || e.touches.length !== 1) return;
+      
+      const touch = e.touches[0];
+      const dx = touch.clientX - this._touchState.startX;
+      const dy = touch.clientY - this._touchState.startY;
+      
+      // Wenn genug Bewegung → als Drag behandeln
+      if (Math.abs(dx) > 10 || Math.abs(dy) > 10) {
+        touchMoved = true;
+      }
+      
+      // Horizontal Drag → Yaw rotieren
+      if (touchMoved && this.currentModel) {
+        const sensitivity = 0.01;
+        this._modelYaw = this._touchState.startYaw + dx * sensitivity;
+      }
+    }, { passive: true });
+
+    canvas.addEventListener('touchend', (e) => {
+      if (!this._touchState.active) return;
+      
+      const touchDuration = performance.now() - touchStartTime;
+      const now = performance.now();
+      
+      // Restore color
+      if (this.currentModel) {
+        this._restoreOriginalColor(this.currentModel);
+      }
+      
+      // Tap Detection (kurz + keine Bewegung)
+      if (!touchMoved && touchDuration < 300) {
+        // Double Tap Detection
+        if (now - this._touchState.lastTap < 400) {
+          // Double Tap → Reset Yaw
+          this._modelYaw = 0;
+          console.log('👆👆 Double Tap → Rotation zurückgesetzt');
+        } else {
+          // Single Tap → Toggle Info-Panel
+          console.log('👆 Single Tap → Info-Panel toggle');
+          if (this._infoPanelOpen) {
+            this._closeInfoPanel();
+          } else if (this.currentModel) {
+            this._openInfoPanel();
+          }
+        }
+        this._touchState.lastTap = now;
+      }
+      
+      this._touchState.active = false;
+    }, { passive: true });
+
+    // Touch Cancel (z.B. bei Anruf)
+    canvas.addEventListener('touchcancel', () => {
+      if (this.currentModel) {
+        this._restoreOriginalColor(this.currentModel);
+      }
+      this._touchState.active = false;
+    }, { passive: true });
+
+    console.log('📱 Touch-Controls initialisiert');
   }
 }

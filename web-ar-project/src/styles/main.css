@@ -190,3 +190,28 @@ a-scene {
 .info-close:hover {
   background: rgba(255, 255, 255, 0.2);
 }
+
+/* Touch-Feedback */
+canvas {
+  touch-action: none; /* Verhindert Browser-Gesten wie Zoom */
+}
+
+.touch-hint {
+  position: fixed;
+  bottom: 50px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.8);
+  color: #fff;
+  padding: 8px 16px;
+  border-radius: 20px;
+  font: 12px system-ui;
+  z-index: 5000;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+
+.touch-hint.visible {
+  opacity: 1;
+}
