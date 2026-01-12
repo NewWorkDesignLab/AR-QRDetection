@@ -10,24 +10,6 @@
   <!-- QR Scanner Lib -->
   <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
   <link rel="stylesheet" href="./styles/main.css">
-  <style>
-    #qr-scanner { position:fixed; inset:0; background:#000; color:#fff; display:flex;
-                  flex-direction:column; align-items:center; justify-content:center; z-index:9999; }
-    #qr-reader { width:260px; }
-    #hand-overlay {
-      position:fixed; inset:0; pointer-events:none;
-      z-index:5000;
-    }
-    .grab-hint {
-      position:fixed; bottom:8px; left:50%; transform:translateX(-50%);
-      background:#000a; color:#fff; padding:6px 10px; font:11px monospace;
-      border-radius:6px; z-index:5001; display:none;
-    }
-    #gesture-status{
-      position:fixed; bottom:8px; left:8px; z-index:5002;
-      background:#000a; color:#fff; padding:6px 10px; font:12px monospace; border-radius:6px;
-    }
-  </style>
 </head>
 <body>
   <div id="qr-scanner">
@@ -55,12 +37,27 @@
       smoothCount="10"
       smoothTolerance="0.01"
       smoothThreshold="5">
-      <!-- Standardmodell (wird ersetzt nach QR) -->
-      <a-box class="interactable model-root"
-             position="0 0.5 0"
-             rotation="0 45 0"
-             color="#4CC3D9"
-             scale="0.5 0.5 0.5"></a-box>
+      
+      <!-- Loading Label mit Hintergrund -->
+      <a-entity class="loading-label" position="0 0.5 0" rotation="-90 0 0">
+        <!-- Hintergrund-Plane -->
+        <a-plane
+          color="#000"
+          opacity="0.7"
+          width="1.2"
+          height="0.4"
+          position="0 0 -0.03">
+        </a-plane>
+        <!-- Text -->
+        <a-text
+          value="Loading..."
+          color="#fff"
+          align="center"
+          width="4"
+          position="0 0 0">
+        </a-text>
+      </a-entity>
+      
     </a-marker>
 
     <a-entity camera></a-entity>
@@ -75,6 +72,14 @@
   <canvas id="hand-overlay"></canvas>
   <div id="gesture-status">L: - | R: -</div>
   <div class="grab-hint" id="grab-hint">Pinch (Daumen + Zeigefinger) zum Greifen</div>
+
+  <!-- Info Panel (wird bei Poke geöffnet) -->
+  <div id="info-panel" class="info-panel hidden">
+    <button id="info-close" class="info-close">✕</button>
+    <h2 id="info-title">Modell-Info</h2>
+    <p id="info-description">Beschreibung wird geladen...</p>
+    <div id="info-meta" class="info-meta"></div>
+  </div>
 
   <script type="module" src="./app.js"></script>
 </body>

@@ -18,22 +18,29 @@ const HAND_CONNECTIONS = [
 export class HandTracker {
   constructor() {
     this.handLandmarker = null;
-    // Events: cursor, grab (state:start/move/end), poke
-    this.gestureCallbacks = { cursor: [], grab: [], poke: [] };
+    this.gestureCallbacks = { cursor: [], grab: [], poke: [], 'pinch-tap': [] };
     this.overlay = document.getElementById('hand-overlay');
     this.octx = this.overlay?.getContext('2d') || null;
 
     // Zustände pro Hand
     this.prevIndexTip = [null, null];
-    this.pinchState = ['end', 'end'];
+    this.pinchState = ['open', 'open'];
     this.lastPokeTs = [0, 0];
     this.pokeCooldownMs = 220;
+
+    // Pinch-Tap State
+    this.pinchStartTs = [0, 0];
+    this.pinchStartPos = [null, null];
+    this.pinchMoveDist = [0, 0];
+    this.lastPinchTapTs = [0, 0];
+    this.pinchTapCooldownMs = 400;
+    this.pinchConfirmFrames = [0, 0];
 
     // Anzeigezustand pro Hand
     this.currentGesture = ['-', '-'];
     this.showPokeUntil = [0, 0];
 
-    // Legacy-Gesten (deaktiviert, um doppelte Events zu vermeiden)
+    this.prevWrist = [null, null];
     this.emitLegacyGestures = false;
   }
 
@@ -82,42 +89,127 @@ export class HandTracker {
           if (tip) this.triggerCallbacks('cursor', { handIndex: i, handedness, position: tip });
 
           if (thumb && tip) {
-            const dist = Math.hypot(thumb.x - tip.x, thumb.y - tip.y);
-            const threshold = 0.045;
-            const was = this.pinchState[i];
-            const now = dist < threshold ? 'hold' : 'end';
-
+            const pinchDist = Math.hypot(thumb.x - tip.x, thumb.y - tip.y);
+            const pinchThreshold = 0.045;
+            const releaseThreshold = 0.065;
+            
+            const wasPinching = this.pinchState[i] === 'hold';
+            const isPinching = pinchDist < pinchThreshold;
+            const isReleased = pinchDist > releaseThreshold;
+            
+            const nowTs = performance.now();
             const center = { x: (tip.x + thumb.x) * 0.5, y: (tip.y + thumb.y) * 0.5 };
 
-            if (was === 'end' && now === 'hold') {
+            if (!wasPinching && isPinching) {
+              // PINCH START
               this.pinchState[i] = 'hold';
+              this.pinchStartTs[i] = nowTs;
+              this.pinchStartPos[i] = { x: center.x, y: center.y };
+              this.pinchMoveDist[i] = 0;
+              this.pinchConfirmFrames[i] = 0;
+              this._setGesture(i, 'pinch');
               this.triggerCallbacks('grab', { handIndex: i, handedness, state: 'start', position: tip, thumb, center, landmarks: lm });
-            } else if (was === 'hold' && now === 'hold') {
+            
+            } else if (wasPinching && !isReleased) {
+              // PINCH HOLD
+              this.pinchConfirmFrames[i]++;
+              
+              if (this.pinchStartPos[i]) {
+                const dx = center.x - this.pinchStartPos[i].x;
+                const dy = center.y - this.pinchStartPos[i].y;
+                this.pinchMoveDist[i] = Math.max(this.pinchMoveDist[i], Math.hypot(dx, dy));
+              }
+              
               this.triggerCallbacks('grab', { handIndex: i, handedness, state: 'move', position: tip, thumb, center, landmarks: lm });
-            } else if (was === 'hold' && now === 'end') {
-              this.pinchState[i] = 'end';
+            
+            } else if (wasPinching && isReleased) {
+              // PINCH END
+              const pinchDuration = nowTs - this.pinchStartTs[i];
+              const movedDist = this.pinchMoveDist[i];
+              const frames = this.pinchConfirmFrames[i];
+              const cooldownOk = nowTs - this.lastPinchTapTs[i] > this.pinchTapCooldownMs;
+              
+              this.pinchState[i] = 'open';
+              this._setGesture(i, '-');
               this.triggerCallbacks('grab', { handIndex: i, handedness, state: 'end', position: tip, thumb, center, landmarks: lm });
+              
+              // PINCH-TAP Check
+              const durationOk = pinchDuration > 80 && pinchDuration < 400;
+              const notMoved = movedDist < 0.035;
+              const stableEnough = frames >= 2;
+              
+              if (durationOk && notMoved && stableEnough && cooldownOk) {
+                this.lastPinchTapTs[i] = nowTs;
+                console.log('✅ Pinch-Tap!', { hand: i, duration: pinchDuration.toFixed(0) + 'ms' });
+                this._setGesture(i, 'tap');
+                setTimeout(() => { if (this.currentGesture[i] === 'tap') this._setGesture(i, '-'); }, 300);
+                this.triggerCallbacks('pinch-tap', { handIndex: i, handedness, position: center, landmarks: lm });
+              }
             }
           }
 
-          // Poke: Impuls + nur Index gestreckt
+          // Poke: Nur wenn Zeigefinger gestreckt + Impuls nach vorne + NICHT im Pinch
           const prev = this.prevIndexTip[i];
-          if (tip && prev) {
+          if (tip && prev && thumb) {
             const vx = tip.x - prev.x;
             const vy = tip.y - prev.y;
             const speed = Math.hypot(vx, vy);
             const nowTs = performance.now();
+            
+            // Bedingungen für Poke:
+            // 1. Zeigefinger gestreckt (Spitze höher als Mittelgelenk)
             const indexExtended = lm[8]?.y < lm[6]?.y;
-            const othersFolded =
-              !(lm[12]?.y < lm[10]?.y) &&
-              !(lm[16]?.y < lm[14]?.y) &&
-              !(lm[20]?.y < lm[18]?.y);
-            if (indexExtended && othersFolded && speed > 0.12 && nowTs - this.lastPokeTs[i] > this.pokeCooldownMs) {
+            
+            // 2. Andere Finger eingeklappt
+            const middleFolded = !(lm[12]?.y < lm[10]?.y);
+            const ringFolded = !(lm[16]?.y < lm[14]?.y);
+            const pinkyFolded = !(lm[20]?.y < lm[18]?.y);
+            const othersFolded = middleFolded && ringFolded && pinkyFolded;
+            
+            // 3. NICHT im Pinch (Daumen weit genug weg von Zeigefinger)
+            const pinchDist = Math.hypot(thumb.x - tip.x, thumb.y - tip.y);
+            const notPinching = pinchDist > 0.08; // Größerer Abstand als Pinch-Threshold
+            
+            // 4. Daumen nicht gestreckt Richtung Zeigefinger (sonst ist es eher "pointing")
+            const thumbTucked = lm[4]?.y > lm[3]?.y || pinchDist > 0.1;
+            
+            // 5. Bewegung muss nach "vorne" sein (y wird kleiner = nach oben im Bild)
+            const movingForward = vy < -0.01;
+            
+            // 6. Geschwindigkeit im richtigen Bereich (nicht zu langsam, nicht zu schnell)
+            const speedOk = speed > 0.03 && speed < 0.25;
+            
+            // 7. Cooldown einhalten
+            const cooldownOk = nowTs - this.lastPokeTs[i] > this.pokeCooldownMs;
+            
+            // 8. Hand muss "stabil" sein (Handgelenk bewegt sich nicht zu viel)
+            const wrist = lm[0];
+            const prevWrist = this.prevWrist?.[i];
+            let wristStable = true;
+            if (wrist && prevWrist) {
+              const wristSpeed = Math.hypot(wrist.x - prevWrist.x, wrist.y - prevWrist.y);
+              wristStable = wristSpeed < 0.05; // Handgelenk relativ ruhig
+            }
+            this.prevWrist = this.prevWrist || [null, null];
+            this.prevWrist[i] = wrist ? { x: wrist.x, y: wrist.y } : null;
+
+            const isPoke = indexExtended && 
+                          othersFolded && 
+                          notPinching && 
+                          thumbTucked &&
+                          movingForward &&
+                          speedOk && 
+                          cooldownOk &&
+                          wristStable;
+
+            if (isPoke) {
               this.lastPokeTs[i] = nowTs;
               this._setGesture(i, 'poke');
-              this.showPokeUntil[i] = nowTs + 450; // 450ms anzeigen
+              this.showPokeUntil[i] = nowTs + 450;
+              console.log('👆 Poke erkannt!', { i, speed: speed.toFixed(3), pinchDist: pinchDist.toFixed(3) });
               this.triggerCallbacks('poke', { handIndex: i, handedness, position: tip, landmarks: lm });
             }
+            
             // Poke-Anzeige abräumen
             if (this.currentGesture[i] === 'poke' && nowTs > this.showPokeUntil[i] && this.pinchState[i] !== 'hold') {
               this._setGesture(i, '-');
@@ -216,6 +308,25 @@ export class HandTracker {
         ctx.arc(tip.x * w, tip.y * h, 4, 0, Math.PI * 2);
         ctx.fillStyle = '#fff';
         ctx.fill();
+      }
+
+      // Gesten-Indikator zeichnen
+      if (this.currentGesture[i] !== '-') {
+        const wrist = lm[0];
+        if (wrist && this.octx) {
+          const x = wrist.x * this.overlay.width;
+          const y = wrist.y * this.overlay.height - 30;
+          
+          this.octx.font = 'bold 16px system-ui';
+          this.octx.textAlign = 'center';
+          
+          const gesture = this.currentGesture[i];
+          const colors = { pinch: '#ff9500', tap: '#00ff00', poke: '#00ccff' };
+          const labels = { pinch: '✊ GRAB', tap: '👆 TAP', poke: '👉 POKE' };
+          
+          this.octx.fillStyle = colors[gesture] || '#fff';
+          this.octx.fillText(labels[gesture] || gesture, x, y);
+        }
       }
     });
   }

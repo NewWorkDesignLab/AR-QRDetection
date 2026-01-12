@@ -1,14 +1,10 @@
 /* filepath: /Users/philip/Documents/NWDL/QR Detection/AR QRDetection/web-ar-project/src/app.js */
 import { ARScene } from './components/ar-scene.js';
+import { getModelById, getModelFileUrl } from './services/supabase.js';
 
 class App {
   constructor() {
     this.arScene = new ARScene();
-    this.modelMap = {
-      // Beispiel-IDs
-      'chair-01': 'assets/models/chair.glb',
-      'lamp-01': 'assets/models/lamp.glb'
-    };
     this.scanner = null;
     this._bindUI();
   }
@@ -80,9 +76,41 @@ class App {
     // AR initialisieren (AR.js fragt Kamera an)
     await this.arScene.init();
 
-    // Modell laden: unbekannte ID → Standardwürfel
-    const url = id && this.modelMap[id] ? this.modelMap[id] : null;
-    this.arScene.loadModelFromQr(url);
+    // Modell aus Supabase laden
+    if (id) {
+      console.log('🔍 Suche Modell mit ID:', id);
+      const model = await getModelById(id);
+
+      if (model) {
+        const modelUrl = getModelFileUrl(model.model_url);
+        this.arScene.loadModelFromQr(modelUrl);
+        this.arScene.setModelInfo({
+          title: model.title,
+          description: model.description,
+          meta: {
+            'ID': model.id,
+            'Scale': model.scale,
+            ...(typeof model.meta === 'object' ? model.meta : {})
+          }
+        });
+      } else {
+        // ID nicht in Datenbank gefunden
+        this.arScene.loadModelFromQr(null);
+        this.arScene.setModelInfo({
+          title: 'Unbekannte ID',
+          description: `Die ID "${id}" wurde nicht in der Datenbank gefunden.`,
+          meta: { 'Gescannte ID': id }
+        });
+      }
+    } else {
+      // Kein QR gescannt → Demo-Würfel
+      this.arScene.loadModelFromQr(null);
+      this.arScene.setModelInfo({
+        title: 'Demo-Würfel',
+        description: 'Scanne einen QR-Code mit einer gültigen Modell-ID, um ein 3D-Modell zu laden.',
+        meta: { 'Tipp': 'Erstelle QR-Code mit "items_test"' }
+      });
+    }
 
     const hint = document.getElementById('grab-hint');
     if (hint) hint.style.display = 'block';

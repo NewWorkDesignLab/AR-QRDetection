@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "^0.10.21",
+    "@supabase/supabase-js": "^2.90.1",
     "html5-qrcode": "^2.3.8",
     "three": "^0.160.0"
   },
