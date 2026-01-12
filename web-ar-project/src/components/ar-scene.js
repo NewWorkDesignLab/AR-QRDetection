@@ -48,8 +48,20 @@ export class ARScene {
     // Rotation State (Yaw + Pitch)
     this._modelYaw = 0;   // Links/Rechts (Y-Achse)
     this._modelPitch = 0; // Oben/Unten (X-Achse)
-    this._pitchLimit = Math.PI
-    this._rotationSensitivity = 0.8; // Faktor für Pinch-Rotation
+    this._pitchLimit = Math.PI;
+    this._rotationSensitivity = 0.8;
+
+    // NEU: Smoothing für Rotation
+    this._targetYaw = 0;
+    this._targetPitch = 0;
+    this._smoothingFactor = 0.3; // 0.1 = sehr smooth, 0.3 = schneller, 1 = sofort
+
+    // Scale State
+    this._modelScale = 1.0;
+    this._targetScale = 1.0;
+    this._minScale = 0.2;   // Minimum 20%
+    this._maxScale = 3.0;   // Maximum 300%
+    this._scaleSmoothing = 0.15;
 
     this._infoPanelOpen = false;
     this._currentModelInfo = {
@@ -67,6 +79,11 @@ export class ARScene {
       startPitch: 0,
       lastTap: 0,
       singleTapTimer: null  // NEU: Timer für verzögerten Single-Tap
+    };
+    this._pinchState = {
+      active: false,
+      startDist: 0,
+      startScale: 1.0
     };
   }
 
@@ -466,16 +483,12 @@ export class ARScene {
     const dx = (pinchCenterNorm?.x ?? 0.5) - g.startCenter.x;
     const dy = (pinchCenterNorm?.y ?? 0.5) - g.startCenter.y;
 
-    // Horizontal → Yaw
-    const yawDelta = dx * Math.PI * 2 * this._rotationSensitivity;
-    this._modelYaw = g.initialYaw + yawDelta;
-
-    // Vertikal → Pitch (invertiert, weil Y nach unten wächst)
-    const pitchDelta = -dy * Math.PI * this._rotationSensitivity;
-    this._modelPitch = g.initialPitch + pitchDelta;
+    // Zielwerte setzen (statt direkte Rotation)
+    this._targetYaw = g.initialYaw + dx * Math.PI * 2 * this._rotationSensitivity;
+    this._targetPitch = g.initialPitch + (-dy * Math.PI * this._rotationSensitivity);
     
-    // Pitch begrenzen (nicht komplett überkopf)
-    this._modelPitch = Math.max(-this._pitchLimit, Math.min(this._pitchLimit, this._modelPitch));
+    // Pitch begrenzen
+    this._targetPitch = Math.max(-this._pitchLimit, Math.min(this._pitchLimit, this._targetPitch));
   }
 
   _rotateEnd(i) {
@@ -529,16 +542,24 @@ export class ARScene {
         // Position und Scale vom Marker
         vm.position.copy(rm.getWorldPosition(new THREE.Vector3()));
         vm.scale.copy(rm.getWorldScale(new THREE.Vector3()));
-        // Rotation: Identity (Modell-Rotation wird separat gesetzt)
         vm.quaternion.identity();
 
-        // Modell-Rotation anwenden (Yaw + Pitch)
+        // Smoothed Rotation + Scale anwenden
         if (this.currentModel) {
+          // Rotation interpolieren
+          this._modelYaw += (this._targetYaw - this._modelYaw) * this._smoothingFactor;
+          this._modelPitch += (this._targetPitch - this._modelPitch) * this._smoothingFactor;
           this._applyRotation(this.currentModel, this._modelYaw, this._modelPitch);
+          
+          // Scale interpolieren
+          this._modelScale += (this._targetScale - this._modelScale) * this._scaleSmoothing;
+          const baseScale = this.currentModel._baseScale || 1;
+          const s = baseScale * this._modelScale;
+          this.currentModel.object3D.scale.set(s, s, s);
         }
 
       } else if (!isVisible && this.virtualMarker?.object3D.visible) {
-        // IMU-Tracking: Position aus IMU, Rotation aufrecht + yaw
+        // IMU-Tracking
         const vm = this.virtualMarker.object3D;
         const sceneEl = document.querySelector('a-scene');
         const camEl = sceneEl?.camera ? sceneEl.camera.el : document.querySelector('[camera]');
@@ -563,11 +584,13 @@ export class ARScene {
         M1.decompose(pos, quat, scl);
 
         vm.position.copy(pos);
-        vm.quaternion.identity(); // Rotation separat
+        vm.quaternion.identity();
         vm.scale.copy(this.markerScaleAtLoss);
 
-        // Modell aufrecht + user yaw
+        // Smoothed Rotation anwenden
         if (this.currentModel) {
+          this._modelYaw += (this._targetYaw - this._modelYaw) * this._smoothingFactor;
+          this._modelPitch += (this._targetPitch - this._modelPitch) * this._smoothingFactor;
           this._applyRotation(this.currentModel, this._modelYaw, this._modelPitch);
         }
       }
@@ -645,8 +668,16 @@ export class ARScene {
     const setActive = (el) => {
       this.currentModel = el;
       this._ensureInteractionCollider(el);
-      this._modelYaw = 0; // reset yaw
-      this._modelPitch = 0; // reset pitch
+      // Reset Rotation
+      this._modelYaw = 0;
+      this._modelPitch = 0;
+      this._targetYaw = 0;
+      this._targetPitch = 0;
+      // Reset Scale
+      this._modelScale = 1.0;
+      this._targetScale = 1.0;
+      // Basis-Scale speichern
+      el._baseScale = 1;
       el.object3D.visible = this.markerVisible;
     };
 
@@ -751,95 +782,131 @@ export class ARScene {
     let touchStartTime = 0;
     let touchMoved = false;
 
+    // Hilfsfunktion: Distanz zwischen zwei Touches
+    const getTouchDistance = (touches) => {
+      if (touches.length < 2) return 0;
+      const dx = touches[0].clientX - touches[1].clientX;
+      const dy = touches[0].clientY - touches[1].clientY;
+      return Math.hypot(dx, dy);
+    };
+
     canvas.addEventListener('touchstart', (e) => {
-      if (e.touches.length !== 1) return;
-      
-      const touch = e.touches[0];
       touchStartTime = performance.now();
       touchMoved = false;
-      
-      this._touchState.active = true;
-      this._touchState.startX = touch.clientX;
-      this._touchState.startY = touch.clientY;
-      this._touchState.startYaw = this._modelYaw;
-      this._touchState.startPitch = this._modelPitch;
-      
-      // Visual Feedback
-      if (this.currentModel) {
-        this._ensureOriginalColor(this.currentModel);
-        this.currentModel.setAttribute('color', '#ff9500');
+
+      if (e.touches.length === 1) {
+        // Single Touch → Rotation
+        const touch = e.touches[0];
+        this._touchState.active = true;
+        this._touchState.startX = touch.clientX;
+        this._touchState.startY = touch.clientY;
+        this._touchState.startYaw = this._targetYaw;
+        this._touchState.startPitch = this._targetPitch;
+        
+        if (this.currentModel) {
+          this._ensureOriginalColor(this.currentModel);
+          this.currentModel.setAttribute('color', '#ff9500');
+        }
+      } else if (e.touches.length === 2) {
+        // Two Finger → Scale (Rotation deaktivieren)
+        this._touchState.active = false;
+        this._pinchState.active = true;
+        this._pinchState.startDist = getTouchDistance(e.touches);
+        this._pinchState.startScale = this._targetScale;
+        touchMoved = true; // Verhindert Tap-Erkennung
+        
+        if (this.currentModel) {
+          this._ensureOriginalColor(this.currentModel);
+          this.currentModel.setAttribute('color', '#00ff88'); // Grün für Scale
+        }
       }
     }, { passive: true });
 
     canvas.addEventListener('touchmove', (e) => {
-      if (!this._touchState.active || e.touches.length !== 1) return;
-      
-      const touch = e.touches[0];
-      const dx = touch.clientX - this._touchState.startX;
-      const dy = touch.clientY - this._touchState.startY;
-      
-      // Wenn genug Bewegung → als Drag behandeln
-      if (Math.abs(dx) > 10 || Math.abs(dy) > 10) {
-        touchMoved = true;
-      }
-      
-      // Drag → Rotation
-      if (touchMoved && this.currentModel) {
-        const sensitivityX = 0.008; // Yaw
-        const sensitivityY = 0.006; // Pitch (etwas weniger sensitiv)
+      if (e.touches.length === 1 && this._touchState.active) {
+        // Single Touch → Rotation
+        const touch = e.touches[0];
+        const dx = touch.clientX - this._touchState.startX;
+        const dy = touch.clientY - this._touchState.startY;
         
-        // Horizontal → Yaw
-        this._modelYaw = this._touchState.startYaw + dx * sensitivityX;
+        if (Math.abs(dx) > 10 || Math.abs(dy) > 10) {
+          touchMoved = true;
+        }
         
-        // Vertikal → Pitch (invertiert für intuitive Steuerung)
-        const newPitch = this._touchState.startPitch - dy * sensitivityY;
-        this._modelPitch = Math.max(-this._pitchLimit, Math.min(this._pitchLimit, newPitch));
+        if (touchMoved && this.currentModel) {
+          const sensitivityX = 0.008;
+          const sensitivityY = 0.008;
+          
+          this._targetYaw = this._touchState.startYaw + dx * sensitivityX;
+          const newPitch = this._touchState.startPitch - dy * sensitivityY;
+          this._targetPitch = Math.max(-this._pitchLimit, Math.min(this._pitchLimit, newPitch));
+        }
+      } else if (e.touches.length === 2 && this._pinchState.active) {
+        // Two Finger → Scale
+        const currentDist = getTouchDistance(e.touches);
+        if (this._pinchState.startDist > 10) { // Mindestabstand
+          const scaleFactor = currentDist / this._pinchState.startDist;
+          let newScale = this._pinchState.startScale * scaleFactor;
+          newScale = Math.max(this._minScale, Math.min(this._maxScale, newScale));
+          this._targetScale = newScale;
+        }
       }
     }, { passive: true });
 
     canvas.addEventListener('touchend', (e) => {
-      if (!this._touchState.active) return;
-      
-      const touchDuration = performance.now() - touchStartTime;
-      const now = performance.now();
-      
-      // Restore color
-      if (this.currentModel) {
-        this._restoreOriginalColor(this.currentModel);
-      }
-      
-      // Tap Detection (kurz + keine Bewegung)
-      if (!touchMoved && touchDuration < 300) {
-        const timeSinceLastTap = now - this._touchState.lastTap;
-        
-        // Pending Single-Tap abbrechen falls vorhanden
-        if (this._touchState.singleTapTimer) {
-          clearTimeout(this._touchState.singleTapTimer);
-          this._touchState.singleTapTimer = null;
+      // Pinch beenden wenn weniger als 2 Finger
+      if (e.touches.length < 2 && this._pinchState.active) {
+        this._pinchState.active = false;
+        if (this.currentModel) {
+          this._restoreOriginalColor(this.currentModel);
         }
-        
-        if (timeSinceLastTap < 350) {
-          // Double Tap erkannt!
-          this._modelYaw = 0;
-          this._modelPitch = 0;
-          console.log('👆👆 Double Tap → Rotation zurückgesetzt');
-          this._touchState.lastTap = 0; // Reset um Triple-Tap zu verhindern
-        } else {
-          // Möglicher Single Tap – warte ob Double-Tap kommt
-          this._touchState.lastTap = now;
-          this._touchState.singleTapTimer = setTimeout(() => {
-            this._touchState.singleTapTimer = null;
-            console.log('👆 Single Tap → Info-Panel toggle');
-            if (this._infoPanelOpen) {
-              this._closeInfoPanel();
-            } else if (this.currentModel) {
-              this._openInfoPanel();
+      }
+
+      // Single Touch Ende
+      if (e.touches.length === 0) {
+        if (this._touchState.active) {
+          this._touchState.active = false;
+          
+          const touchDuration = performance.now() - touchStartTime;
+          const now = performance.now();
+          
+          if (this.currentModel) {
+            this._restoreOriginalColor(this.currentModel);
+          }
+          
+          // Tap Detection (nur wenn nicht bewegt und nicht gepincht)
+          if (!touchMoved && touchDuration < 300) {
+            const timeSinceLastTap = now - this._touchState.lastTap;
+            
+            if (this._touchState.singleTapTimer) {
+              clearTimeout(this._touchState.singleTapTimer);
+              this._touchState.singleTapTimer = null;
             }
-          }, 350); // Warte 350ms auf möglichen zweiten Tap
+            
+            if (timeSinceLastTap < 350) {
+              // Double Tap → Reset Rotation UND Scale
+              this._targetYaw = 0;
+              this._targetPitch = 0;
+              this._targetScale = 1.0;
+              console.log('👆👆 Double Tap → Reset (Rotation + Scale)');
+              this._touchState.lastTap = 0;
+            } else {
+              this._touchState.lastTap = now;
+              this._touchState.singleTapTimer = setTimeout(() => {
+                this._touchState.singleTapTimer = null;
+                console.log('👆 Single Tap → Info-Panel toggle');
+                if (this._infoPanelOpen) {
+                  this._closeInfoPanel();
+                } else if (this.currentModel) {
+                  this._openInfoPanel();
+                }
+              }, 350);
+            }
+          }
         }
+        
+        this._pinchState.active = false;
       }
-      
-      this._touchState.active = false;
     }, { passive: true });
 
     canvas.addEventListener('touchcancel', () => {
@@ -847,8 +914,9 @@ export class ARScene {
         this._restoreOriginalColor(this.currentModel);
       }
       this._touchState.active = false;
+      this._pinchState.active = false;
     }, { passive: true });
 
-    console.log('📱 Touch-Controls initialisiert (Yaw + Pitch)');
+    console.log('📱 Touch-Controls initialisiert (Rotation + Scale)');
   }
 }
