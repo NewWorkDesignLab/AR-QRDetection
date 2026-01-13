@@ -78,7 +78,10 @@ a-scene {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  z-index: 9999;
+  z-index: 9000; /* Reduziert, damit Modal drüber kann */
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 16px 12px 24px;
 }
 
 #hand-overlay {
@@ -215,3 +218,87 @@ canvas {
 .touch-hint.visible {
   opacity: 1;
 }
+
+/* Onboarding Styles */
+.onboarding {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: center;
+  text-align: center;
+  margin-bottom: 16px;
+  position: relative;
+  z-index: 9002;
+  pointer-events: auto;
+}
+.onboarding .steps {
+  padding-left: 18px;
+  margin: 0;
+  color: #ddd;
+}
+.cta-row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: center;
+  position: relative;
+  z-index: 5;
+}
+button.primary {
+  background: #00c2ff;
+  color: #000;
+  border: none;
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-weight: 600;
+}
+button.ghost {
+  background: transparent;
+  color: #fff;
+  border: 1px solid #fff3;
+  padding: 10px 14px;
+  border-radius: 8px;
+}
+
+.qr-frame {
+  position: relative;
+  width: 90vw;
+  max-width: 480px;
+  aspect-ratio: 3 / 4;
+  z-index: 9001;
+}
+.qr-mask {
+  position: absolute;
+  inset: 0;
+  border: 2px solid #00ff88;
+  box-shadow:
+    0 0 0 9999px rgba(0,0,0,0.6),
+    0 0 18px rgba(0,255,136,0.35);
+  pointer-events: none;
+}
+#qr-hint {
+  color: #fff;
+  margin-top: 12px;
+  text-align: center;
+  font-size: 14px;
+}
+
+.modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.65);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000; /* MUSS höher sein als #qr-scanner */
+}
+.modal.hidden { display: none; }
+.modal-card {
+  background: #111;
+  color: #fff;
+  padding: 18px;
+  border-radius: 12px;
+  width: min(320px, 90vw);
+  box-shadow: 0 12px 30px rgba(0,0,0,0.4);
+}
+.modal-card h3 { margin-top: 0; }

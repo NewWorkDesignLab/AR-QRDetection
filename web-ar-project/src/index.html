@@ -13,10 +13,35 @@
 </head>
 <body>
   <div id="qr-scanner">
-    <div id="qr-reader"></div>
-    <p>Scanne einen QR-Code, um zu starten</p>
-    <button id="start-scan">Scanner starten</button>
-    <button id="skip-qr">Überspringen</button>
+    <div class="onboarding" id="onboarding">
+      <h2>So startest du</h2>
+      <ol class="steps">
+        <li>QR-Code scannen</li>
+        <li>Marker ins Bild halten</li>
+        <li>Mit Pinch/Poke interagieren</li>
+      </ol>
+      <div class="cta-row">
+        <button id="start-scan" class="primary">Scanner starten</button>
+        <button id="skip-qr" class="ghost">Ohne QR starten (Demo)</button>
+      </div>
+    </div>
+
+    <div class="qr-frame">
+      <div id="qr-reader"></div>
+      <div class="qr-mask"></div>
+    </div>
+    <p id="qr-hint">Halte den Code in den Rahmen</p>
+  </div>
+
+  <div id="permission-modal" class="modal hidden">
+    <div class="modal-card">
+      <h3>Kamera-Zugriff benötigt</h3>
+      <p>Wir brauchen die Kamera, um den QR-Code zu scannen.</p>
+      <div class="cta-row">
+        <button id="permit-continue" class="primary">Weiter</button>
+        <button id="permit-cancel" class="ghost">Abbrechen</button>
+      </div>
+    </div>
   </div>
 
   <a-scene
