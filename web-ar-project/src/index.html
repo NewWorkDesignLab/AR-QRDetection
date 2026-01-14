@@ -18,7 +18,7 @@
       <ol class="steps">
         <li>QR-Code scannen</li>
         <li>Marker ins Bild halten</li>
-        <li>Mit Pinch/Poke interagieren</li>
+        <li>Mit Pinch/Pinch Tap interagieren</li>
       </ol>
       <div class="cta-row">
         <button id="start-scan" class="primary">Scanner starten</button>
@@ -49,6 +49,7 @@
     embedded
     vr-mode-ui="enabled:false"
     style="opacity:0; transition:opacity .35s"
+    renderer="antialias: true; alpha: true; precision: medium; logarithmicDepthBuffer: true; colorManagement: true;"
     arjs="sourceType: webcam;
           trackingMethod: best;
           detectionMode: mono;
@@ -63,23 +64,23 @@
       smoothTolerance="0.01"
       smoothThreshold="5">
       
-      <!-- Loading Label mit Hintergrund -->
+      <!-- Loading Label mit Hintergrund/ Funktioniert gerade nicht-->
       <a-entity class="loading-label" position="0 0.5 0" rotation="-90 0 0">
         <!-- Hintergrund-Plane -->
-        <a-plane
+        <!--<a-plane
           color="#000"
-          opacity="0.7"
-          width="1.2"
-          height="0.4"
-          position="0 0 -0.03">
-        </a-plane>
+          opacity="0.5"
+          width="4.5"
+          height="1"
+          position="0 0 0">
+        </a-plane>-->
         <!-- Text -->
         <a-text
           value="Loading..."
-          color="#fff"
+          color="#000"
           align="center"
           width="4"
-          position="0 0 0">
+          position="0 0 0.5">
         </a-text>
       </a-entity>
       
