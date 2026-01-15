@@ -253,21 +253,9 @@ async function enterDemoMode() {
 async function goBackToScanner() {
   console.log('[Nav] Going back to scanner...');
 
-  // Stop AR scene
-  hideARScene();
-
-  // Show scanner UI again
-  showScanner();
-
-  // Reset scanner
-  if (qrScanner && isScanning) {
-    try {
-      await qrScanner.stop();
-      isScanning = false;
-    } catch (err) {
-      console.error('[QRScanner] Error stopping:', err);
-    }
-  }
+  // Einfach die Seite neu laden - das setzt alles zurück
+  // und bringt uns zurück zum Onboarding-Screen
+  window.location.reload();
 }
 
 /**
