@@ -2,161 +2,514 @@
 import { ARScene } from './components/ar-scene.js';
 import { getModelById, getModelFileUrl } from './services/supabase.js';
 import { StateMachine, UIState } from './state-machine.js';
+import { NavigationService } from './services/navigation.js';
 
-class App {
-  constructor() {
-    this.state = new StateMachine((s) => this._applyUIState(s));
-    this.arScene = new ARScene();
-    this.scanner = null;
-    this._bindUI();
+// ===== GLOBAL STATE =====
+let qrScanner = null;
+let isScanning = false;
+let arScene = null;  // ← NEU: globale AR Scene Instanz
+
+/**
+ * ===== MAIN INITIALIZATION =====
+ */
+document.addEventListener('DOMContentLoaded', () => {
+  console.log('[App] Initializing...');
+  
+  const isLandingPage = document.body.classList.contains('landing-page');
+  
+  if (isLandingPage) {
+    console.log('[Landing] Page detected');
+    initLandingPageButtons();
+  } else {
+    console.log('[App] App page detected');
+    initAppPageButtons();
+    initQRScanner();
+    initARSceneManager(); // ← NEU
   }
+});
 
-  _bindUI() {
-    const startBtn = document.getElementById('start-scan');
-    const skipBtn = document.getElementById('skip-qr');
-    const permitModal = document.getElementById('permission-modal');
-    const permitOk = document.getElementById('permit-continue');
-    const permitCancel = document.getElementById('permit-cancel');
+/**
+ * ===== LANDING PAGE BUTTON HANDLERS =====
+ */
+function initLandingPageButtons() {
+  console.log('[Landing] Initializing buttons...');
 
-    startBtn?.addEventListener('click', () => {
-      permitModal?.classList.remove('hidden');
+  const startScanningBtn = document.getElementById('start-scanning-btn');
+  const demoBtn = document.getElementById('demo-btn');
+
+  if (startScanningBtn) {
+    startScanningBtn.addEventListener('click', () => {
+      console.log('[Landing] "Jetzt scannen" clicked');
+      NavigationService.goToScanner();
     });
-    permitOk?.addEventListener('click', () => {
-      permitModal?.classList.add('hidden');
-      this.startQRScanner();
+  }
+
+  if (demoBtn) {
+    demoBtn.addEventListener('click', () => {
+      console.log('[Landing] "Demo ohne QR" clicked');
+      NavigationService.goToARScene('demo');
     });
-    permitCancel?.addEventListener('click', () => {
-      permitModal?.classList.add('hidden');
+  }
+}
+
+/**
+ * ===== APP PAGE BUTTON HANDLERS =====
+ */
+function initAppPageButtons() {
+  console.log('[App] Initializing button handlers...');
+
+  // ===== SCANNER BUTTONS =====
+  const startScanBtn = document.getElementById('start-scan');
+  if (startScanBtn) {
+    startScanBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      console.log('[Scanner] "Scanner starten" clicked');
+      startQRScanning();
     });
-    skipBtn?.addEventListener('click', () => this.startAR(null));
   }
 
-  _applyUIState(state, payload) {
-    const qrOverlay = document.getElementById('qr-scanner');
-    const onboarding = document.getElementById('onboarding');
-    const sceneEl   = document.getElementById('ar-scene');
-    if (qrOverlay) {
-      const showQR = [UIState.QR_SCAN, UIState.ONBOARDING, UIState.QR_DENIED, UIState.QR_ERROR].includes(state);
-      qrOverlay.style.display = showQR ? 'flex' : 'none';
-      if (state === UIState.ONBOARDING) onboarding?.classList.remove('hidden');
-      else onboarding?.classList.add('hidden');
-
-      if (state === UIState.QR_DENIED) this._setQRMessage('Kamera-Zugriff verweigert. Bitte Berechtigungen erlauben und erneut versuchen.');
-      if (state === UIState.QR_ERROR)  this._setQRMessage('Scanner-Fehler. Bitte erneut versuchen oder Demo starten.');
-      if (state === UIState.QR_SCAN)   this._setQRMessage('Scanne einen QR-Code, um zu starten');
-      if (state === UIState.ONBOARDING) this._setQRMessage('Starte den Scanner oder nutze die Demo.');
-    }
-    if (sceneEl) sceneEl.style.opacity = (state === UIState.AR_ACTIVE || state === UIState.AR_LOADING) ? '1' : '0';
+  const skipQrBtn = document.getElementById('skip-qr');
+  if (skipQrBtn) {
+    skipQrBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      console.log('[Scanner] "Ohne QR starten" clicked');
+      enterDemoMode();
+    });
   }
 
-  _setQRMessage(text) {
-    const p = document.querySelector('#qr-scanner p');
-    if (p) p.textContent = text;
+  // ===== AR SCENE NAVIGATION BUTTONS =====
+  const nextScanBtn = document.getElementById('next-scan-btn');
+  if (nextScanBtn) {
+    nextScanBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      console.log('[AR] "Nächsten QR scannen" clicked');
+      goBackToScanner();
+    });
   }
 
-  async startQRScanner() {
-    this.state.set(UIState.QR_SCAN);
-    const el = document.getElementById('qr-reader');
-    if (!el) return;
-    const isSecure = location.protocol === 'https:' || location.hostname === 'localhost';
-    if (!isSecure) {
-      alert('Bitte über http://localhost oder HTTPS öffnen – Kamera sonst blockiert.');
-      this.state.set(UIState.QR_ERROR);
-      return;
-    }
-    if (!this.scanner) this.scanner = new Html5Qrcode('qr-reader');
-    try {
-      await this.scanner.start(
-        { facingMode: 'environment' },
-        { fps: 10, qrbox: 220, rememberLastUsedCamera: true },
-        async (text) => {
-          try { await this.scanner.stop(); } catch {}
-          const id = this._parseId(text);
-          this.startAR(id);
-        },
-        () => {}
-      );
-      this._setQRMessage('Halte den Code in den Rahmen');
-    } catch (e) {
-      console.error('QR Fehler', e);
-      if (String(e?.name).includes('NotAllowedError')) {
-        alert('Kamera-Zugriff verweigert. Erlaube die Kamera in den Website-Einstellungen deines Browsers.');
-        this.state.set(UIState.QR_DENIED, { reason: e?.message });
-      } else {
-        this.state.set(UIState.QR_ERROR, { error: e?.message });
-      }
-    }
+  const backHomeBtn = document.getElementById('back-home-btn');
+  if (backHomeBtn) {
+    backHomeBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      console.log('[AR] "Startseite" clicked');
+      NavigationService.goHome();
+    });
   }
 
-  _parseId(raw) {
-    try {
-      const u = new URL(raw);
-      return u.searchParams.get('id') || raw;
-    } catch {
-      return raw;
-    }
+  // ===== PERMISSION MODAL BUTTONS =====
+  const permitContinueBtn = document.getElementById('permit-continue');
+  if (permitContinueBtn) {
+    permitContinueBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      console.log('[Permission] Continuing...');
+      startQRScanning(); // ← FIX: Direkt zum Scannen gehen
+      hidePermissionModal();
+    });
   }
 
-  async startAR(id) {
-    // SOFORT QR-Scanner ausblenden (Overlay auf 'none')
-    this.state.set(UIState.AR_LOADING);
-    
-    // Kleiner Timeout, damit der DOM render cycle durchläuft und das UI sauber updated
-    // bevor der schwere AR init Prozess den Main-Thread blockiert
-    await new Promise(r => setTimeout(r, 50));
+  const permitCancelBtn = document.getElementById('permit-cancel');
+  if (permitCancelBtn) {
+    permitCancelBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      console.log('[Permission] Cancelled');
+      hidePermissionModal();
+      NavigationService.goHome();
+    });
+  }
 
-    console.log('Starte AR Modus mit ID:', id);
+  // ===== INFO PANEL CLOSE BUTTON =====
+  const infoCloseBtn = document.getElementById('info-close');
+  if (infoCloseBtn) {
+    infoCloseBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      console.log('[Info] Panel closed');
+      hideInfoPanel();
+    });
+  }
+}
 
-    if (this.scanner) {
-      try { await this.scanner.stop(); } catch (e) { /* ignore stops */ }
-      this.scanner = null;
-    }
+/**
+ * ===== AR SCENE MANAGER INITIALIZATION =====
+ */
+async function initARSceneManager() {
+  console.log('[ARScene] Initializing manager...');
+  
+  try {
+    arScene = new ARScene();
+    console.log('[ARScene] Manager ready (not initialized yet)');
+  } catch (err) {
+    console.error('[ARScene] Init error:', err);
+  }
+}
 
-    // Erst jetzt AR laden
-    // Hinweis: Hier wird der Browser nach Kamera fragen, da ARScene getUserMedia aufruft
-    await this.arScene.init();
+/**
+ * ===== QR SCANNER INITIALIZATION =====
+ */
+function initQRScanner() {
+  console.log('[QRScanner] Initializing...');
 
-    // Hier ggf. Modell laden basierend auf ID
-    if (id) {
-      console.log('🔍 Suche Modell mit ID:', id);
-      const model = await getModelById(id);
+  const qrReader = document.getElementById('qr-reader');
+  if (!qrReader) {
+    console.error('[QRScanner] #qr-reader not found');
+    return;
+  }
 
-      if (model) {
-        const modelUrl = getModelFileUrl(model.model_url);
-        this.arScene.loadModelFromQr(modelUrl);
-        this.arScene.setModelInfo({
-          title: model.title,
-          description: model.description,
-          meta: {
-            'ID': model.id,
-            'Scale': model.scale,
-            ...(typeof model.meta === 'object' ? model.meta : {})
-          }
-        });
-      } else {
-        // ID nicht in Datenbank gefunden
-        this.arScene.loadModelFromQr(null);
-        this.arScene.setModelInfo({
-          title: 'Unbekannte ID',
-          description: `Die ID "${id}" wurde nicht in der Datenbank gefunden.`,
-          meta: { 'Gescannte ID': id }
-        });
-      }
+  qrScanner = new Html5Qrcode('qr-reader');
+  console.log('[QRScanner] Ready');
+}
+
+/**
+ * ===== START QR SCANNING =====
+ */
+async function startQRScanning() {
+  if (isScanning) {
+    console.log('[QRScanner] Already scanning');
+    return;
+  }
+
+  if (!qrScanner) {
+    console.error('[QRScanner] Scanner not initialized');
+    initQRScanner();
+  }
+
+  try {
+    console.log('[QRScanner] Starting scan...');
+    isScanning = true;
+
+    await qrScanner.start(
+      { facingMode: 'environment' },
+      {
+        fps: 10,
+        qrbox: { width: 250, height: 250 }
+      },
+      onQRCodeScanned,
+      onQRScanError
+    );
+
+    // Hide onboarding, show scanner UI
+    hideOnboarding();
+    showQRFrame();
+  } catch (err) {
+    console.error('[QRScanner] Error:', err);
+    isScanning = false;
+
+    if (err.name === 'NotAllowedError') {
+      showPermissionModal();
+    } else if (err.name === 'NotFoundError') {
+      alert('Keine Kamera gefunden');
     } else {
-      // Kein QR gescannt → Demo-Würfel
-      this.arScene.loadModelFromQr(null);
-      this.arScene.setModelInfo({
-        title: 'Demo-Würfel',
-        description: 'Scanne einen QR-Code mit einer gültigen Modell-ID, um ein 3D-Modell zu laden.',
-        meta: { 'Tipp': 'Erstelle QR-Code mit "items_test"' }
-      });
+      alert('Fehler beim Starten des Scanners: ' + err.message);
     }
+  }
+}
+
+/**
+ * ===== ON QR CODE SCANNED =====
+ */
+async function onQRCodeScanned(decodedText) {
+  console.log('[QR] Code scanned:', decodedText);
+
+  // Stop scanning
+  try {
+    await qrScanner.stop();
+    isScanning = false;
+  } catch (err) {
+    console.error('[QRScanner] Error stopping:', err);
+  }
+
+  // Parse station ID from QR code
+  // Unterstützt: "id=123", "station=abc", "123", "abc"
+  let stationId = decodedText;
+  if (decodedText.includes('=')) {
+    stationId = decodedText.split('=')[1];
+  }
+
+  console.log('[QR] Extracted ID:', stationId);
+
+  // Hide scanner, show AR
+  hideScanner();
+  await showARScene(stationId);
+}
+
+/**
+ * ===== ON QR SCAN ERROR =====
+ */
+function onQRScanError(error) {
+  // Silently ignore (normal while scanning)
+}
+
+/**
+ * ===== DEMO MODE (ohne QR) =====
+ */
+async function enterDemoMode() {
+  console.log('[Demo] Entering demo mode...');
+  hideScanner();
+  await showARScene('demo');
+}
+
+/**
+ * ===== GO BACK TO SCANNER =====
+ */
+async function goBackToScanner() {
+  console.log('[Nav] Going back to scanner...');
+
+  // Stop AR scene
+  hideARScene();
+
+  // Show scanner UI again
+  showScanner();
+
+  // Reset scanner
+  if (qrScanner && isScanning) {
+    try {
+      await qrScanner.stop();
+      isScanning = false;
+    } catch (err) {
+      console.error('[QRScanner] Error stopping:', err);
+    }
+  }
+}
+
+/**
+ * ===== SHOW AR SCENE WITH MODEL LOADING =====
+ */
+async function showARScene(stationId) {
+  console.log(`[AR] Showing scene with ID: ${stationId}`);
+
+  if (!arScene) {
+    console.error('[AR] ARScene not initialized');
+    alert('AR-Szene konnte nicht initialisiert werden');
+    return;
+  }
+
+  try {
+    // 1. Initialisiere AR Szene (Kamera, Hand Tracking, etc.)
+    console.log('[AR] Initializing scene...');
+    await arScene.init();
+    console.log('[AR] Scene initialized');
+
+    // 2. Lade Modell basierend auf ID
+    console.log('[AR] Loading model for ID:', stationId);
+    await loadAndShowModel(stationId);
+
+    // 3. Zeige AR
+    const arSceneEl = document.getElementById('ar-scene');
+    if (arSceneEl) {
+      arSceneEl.style.opacity = '1';
+      arSceneEl.style.pointerEvents = 'auto';
+    }
+
+    // 4. Zeige Navigation Bar
+    showARNavBar();
 
     const hint = document.getElementById('grab-hint');
     if (hint) hint.style.display = 'block';
 
-    this.state.set(UIState.AR_ACTIVE);
+  } catch (err) {
+    console.error('[AR] Error showing scene:', err);
+    alert('Fehler beim Laden der AR-Szene: ' + err.message);
+    hideARScene();
   }
 }
 
-document.addEventListener('DOMContentLoaded', () => new App());
+/**
+ * ===== LOAD AND SHOW MODEL =====
+ */
+async function loadAndShowModel(stationId) {
+  console.log(`[Model] Loading model for station: ${stationId}`);
+
+  try {
+    if (stationId === 'demo') {
+      // Demo-Würfel
+      console.log('[Model] Loading demo cube');
+      arScene.loadModelFromQr(null);
+      arScene.setModelInfo({
+        title: 'Demo-Würfel',
+        description: 'Dies ist ein Demo-Modell. Scanne einen QR-Code mit einer gültigen Modell-ID, um ein 3D-Modell zu laden.',
+        meta: { 'Tipp': 'Nutze die ID "items_test" zum Testen' }
+      });
+      return;
+    }
+
+    // Versuche Modell aus Datenbank zu laden
+    console.log('[Model] Fetching from database:', stationId);
+    const model = await getModelById(stationId);
+
+    if (model) {
+      console.log('[Model] Found model:', model.title);
+      const modelUrl = getModelFileUrl(model.model_url);
+      console.log('[Model] Model URL:', modelUrl);
+      
+      arScene.loadModelFromQr(modelUrl);
+      arScene.setModelInfo({
+        title: model.title || 'Unbekanntes Modell',
+        description: model.description || 'Keine Beschreibung verfügbar.',
+        meta: {
+          'ID': model.id,
+          'Scale': model.scale,
+          ...(typeof model.meta === 'object' ? model.meta : {})
+        }
+      });
+    } else {
+      console.warn('[Model] Model not found for ID:', stationId);
+      // Fallback: Demo-Würfel mit Fehlermeldung
+      arScene.loadModelFromQr(null);
+      arScene.setModelInfo({
+        title: 'Modell nicht gefunden',
+        description: `Die ID "${stationId}" wurde nicht in der Datenbank gefunden.`,
+        meta: { 'Gescannte ID': stationId }
+      });
+    }
+  } catch (err) {
+    console.error('[Model] Error loading model:', err);
+    // Fallback: Demo-Würfel mit Fehlermeldung
+    arScene.loadModelFromQr(null);
+    arScene.setModelInfo({
+      title: 'Fehler beim Laden',
+      description: 'Es gab einen Fehler beim Laden des Modells: ' + err.message,
+      meta: { 'Station ID': stationId }
+    });
+  }
+}
+
+/**
+ * ===== UI STATE FUNCTIONS =====
+ */
+
+function showScanner() {
+  console.log('[UI] Showing scanner...');
+  const qrScannerDiv = document.getElementById('qr-scanner');
+  if (qrScannerDiv) {
+    qrScannerDiv.style.display = 'block';
+    qrScannerDiv.style.opacity = '1';
+    qrScannerDiv.style.zIndex = '1000';
+  }
+  hideARNavBar();
+}
+
+function hideScanner() {
+  console.log('[UI] Hiding scanner...');
+  const qrScannerDiv = document.getElementById('qr-scanner');
+  if (qrScannerDiv) {
+    qrScannerDiv.style.display = 'none';
+    qrScannerDiv.style.opacity = '0';
+  }
+}
+
+function showOnboarding() {
+  console.log('[UI] Showing onboarding...');
+  const onboarding = document.getElementById('onboarding');
+  if (onboarding) {
+    onboarding.style.display = 'block';
+    onboarding.style.opacity = '1';
+  }
+}
+
+function hideOnboarding() {
+  console.log('[UI] Hiding onboarding...');
+  const onboarding = document.getElementById('onboarding');
+  if (onboarding) {
+    onboarding.style.display = 'none';
+    onboarding.style.opacity = '0';
+  }
+}
+
+function showQRFrame() {
+  console.log('[UI] Showing QR frame...');
+  const frame = document.querySelector('.qr-frame');
+  if (frame) {
+    frame.style.display = 'block';
+  }
+}
+
+function hideQRFrame() {
+  console.log('[UI] Hiding QR frame...');
+  const frame = document.querySelector('.qr-frame');
+  if (frame) {
+    frame.style.display = 'none';
+  }
+}
+
+function hideARScene() {
+  console.log('[UI] Hiding AR scene...');
+  const arSceneEl = document.getElementById('ar-scene');
+  if (arSceneEl) {
+    arSceneEl.style.opacity = '0';
+    arSceneEl.style.pointerEvents = 'none';
+  }
+  hideARNavBar();
+
+  const hint = document.getElementById('grab-hint');
+  if (hint) hint.style.display = 'none';
+}
+
+function showARNavBar() {
+  console.log('[UI] Showing AR nav bar...');
+  const navBar = document.getElementById('ar-nav-bar');
+  if (navBar) {
+    navBar.classList.remove('hidden');
+  }
+}
+
+function hideARNavBar() {
+  console.log('[UI] Hiding AR nav bar...');
+  const navBar = document.getElementById('ar-nav-bar');
+  if (navBar) {
+    navBar.classList.add('hidden');
+  }
+}
+
+function showPermissionModal() {
+  console.log('[UI] Showing permission modal...');
+  const modal = document.getElementById('permission-modal');
+  if (modal) {
+    modal.classList.remove('hidden');
+    modal.style.display = 'flex';
+  }
+}
+
+function hidePermissionModal() {
+  console.log('[UI] Hiding permission modal...');
+  const modal = document.getElementById('permission-modal');
+  if (modal) {
+    modal.classList.add('hidden');
+    modal.style.display = 'none';
+  }
+}
+
+function showInfoPanel(title, description, metadata) {
+  console.log('[UI] Showing info panel...');
+  const panel = document.getElementById('info-panel');
+  if (panel) {
+    document.getElementById('info-title').textContent = title || 'Info';
+    document.getElementById('info-description').textContent = description || 'Keine Beschreibung verfügbar';
+
+    const metaDiv = document.getElementById('info-meta');
+    if (metaDiv && metadata) {
+      metaDiv.innerHTML = metadata;
+    }
+
+    panel.classList.remove('hidden');
+    panel.style.display = 'flex';
+  }
+}
+
+function hideInfoPanel() {
+  console.log('[UI] Hiding info panel...');
+  const panel = document.getElementById('info-panel');
+  if (panel) {
+    panel.classList.add('hidden');
+    panel.style.display = 'none';
+  }
+}
+
+/**
+ * ===== EXPORTS FOR EXTERNAL USE =====
+ */
+export {
+  showARScene,
+  hideARScene,
+  showInfoPanel,
+  hideInfoPanel,
+  goBackToScanner
+};
