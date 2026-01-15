@@ -328,7 +328,11 @@ async function loadAndShowModel(stationId) {
       const modelUrl = getModelFileUrl(model.model_url);
       console.log('[Model] Model URL:', modelUrl);
       
-      arScene.loadModelFromQr(modelUrl);
+      const initialScale = parseFloat(model.scale) || 1.0;
+      console.log('[Model] Initial scale from DB:', initialScale);
+      
+      arScene.loadModelFromQr(modelUrl, initialScale);
+      
       arScene.setModelInfo({
         title: model.title || 'Unbekanntes Modell',
         description: model.description || 'Keine Beschreibung verfügbar.',
@@ -340,7 +344,6 @@ async function loadAndShowModel(stationId) {
       });
     } else {
       console.warn('[Model] Model not found for ID:', stationId);
-      // Fallback: Demo-Würfel mit Fehlermeldung
       arScene.loadModelFromQr(null);
       arScene.setModelInfo({
         title: 'Modell nicht gefunden',
@@ -350,7 +353,6 @@ async function loadAndShowModel(stationId) {
     }
   } catch (err) {
     console.error('[Model] Error loading model:', err);
-    // Fallback: Demo-Würfel mit Fehlermeldung
     arScene.loadModelFromQr(null);
     arScene.setModelInfo({
       title: 'Fehler beim Laden',

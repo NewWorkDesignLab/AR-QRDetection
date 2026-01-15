@@ -48,8 +48,8 @@ export class ARScene {
     // Rotation State (Yaw + Pitch)
     this._modelYaw = 0;   // Links/Rechts (Y-Achse)
     this._modelPitch = 0; // Oben/Unten (X-Achse)
-    this._pitchLimit = Math.PI;
-    this._rotationSensitivity = 0.8;
+    this._pitchLimit = Infinity;
+    this._rotationSensitivity = 0.9;
 
     // NEU: Smoothing für Rotation
     this._targetYaw = 0;
@@ -85,6 +85,11 @@ export class ARScene {
       startDist: 0,
       startScale: 1.0
     };
+
+    // FPS Limiter
+    this._targetFPS = 30;
+    this._frameInterval = 1000 / this._targetFPS; // ~33.33ms
+    this._lastFrameTime = 0;
   }
 
   async init() {
@@ -485,7 +490,7 @@ export class ARScene {
 
     // Zielwerte setzen (statt direkte Rotation)
     this._targetYaw = g.initialYaw + dx * Math.PI * 2 * this._rotationSensitivity;
-    this._targetPitch = g.initialPitch + (-dy * Math.PI * this._rotationSensitivity);
+    this._targetPitch = g.initialPitch + (dy * Math.PI * 2 * this._rotationSensitivity);
     
     // Pitch begrenzen
     this._targetPitch = Math.max(-this._pitchLimit, Math.min(this._pitchLimit, this._targetPitch));
@@ -530,7 +535,18 @@ export class ARScene {
   }
 
   _loop() {
-    const tick = () => {
+    const tick = (timestamp) => {
+      // FPS Throttling
+      const elapsed = timestamp - this._lastFrameTime;
+      
+      if (elapsed < this._frameInterval) {
+        requestAnimationFrame(tick);
+        return; // Frame überspringen
+      }
+      
+      // Frame durchführen
+      this._lastFrameTime = timestamp - (elapsed % this._frameInterval);
+      
       const wasVisible = this._lastMarkerVisible;
       const isVisible = this.markerVisible;
 
@@ -539,12 +555,10 @@ export class ARScene {
         const vm = this.virtualMarker.object3D;
         rm.updateMatrixWorld(true);
 
-        // Position und Scale vom Marker
         vm.position.copy(rm.getWorldPosition(new THREE.Vector3()));
         vm.scale.copy(rm.getWorldScale(new THREE.Vector3()));
         vm.quaternion.identity();
 
-        // Smoothed Rotation + Scale anwenden
         if (this.currentModel) {
           // Rotation interpolieren
           this._modelYaw += (this._targetYaw - this._modelYaw) * this._smoothingFactor;
@@ -598,7 +612,9 @@ export class ARScene {
       this._lastMarkerVisible = isVisible;
       requestAnimationFrame(tick);
     };
-    tick();
+    
+    // Starte Loop mit initialem Timestamp
+    requestAnimationFrame(tick);
   }
 
   // Verschiebt Interactables vom echten auf den virtuellen Marker (kein Duplikat)
@@ -654,7 +670,7 @@ export class ARScene {
       .forEach(el => { el.object3D.visible = flag; });
   }
 
-  loadModelFromQr(urlOrNull) {
+  loadModelFromQr(urlOrNull, initialScale = 1.0) {
     const anchor = this.virtualMarker || this.realMarker;
     if (!anchor) return;
 
@@ -665,30 +681,38 @@ export class ARScene {
     // Remove old models
     anchor.querySelectorAll('.model-root').forEach(n => n.remove());
 
-    const setActive = (el) => {
+    const setActive = (el, baseScale) => {
       this.currentModel = el;
       this._ensureInteractionCollider(el);
+      
       // Reset Rotation
       this._modelYaw = 0;
       this._modelPitch = 0;
       this._targetYaw = 0;
       this._targetPitch = 0;
-      // Reset Scale
-      this._modelScale = 1.0;
+
+      this._modelScale = 1.0  // Interaktiver Multiplikator (bleibt 1.0)
       this._targetScale = 1.0;
-      // Basis-Scale speichern
-      el._baseScale = 1;
+
+      el._baseScale = baseScale;
+
+      const s = baseScale * this._modelScale;
+      el.object3D.scale.set(s, s, s);
+      
       el.object3D.visible = this.markerVisible;
+      
+      console.log(`[Model] Loaded with base scale: ${baseScale}, applied: ${s}`);
     };
 
     if (!urlOrNull) {
+      // Demo-Würfel
       const box = document.createElement('a-box');
       box.classList.add('interactable', 'model-root');
       box.setAttribute('color', '#FF9500');
       box.setAttribute('position', '0 0.5 0');
       box.setAttribute('scale', '0.5 0.5 0.5');
       anchor.appendChild(box);
-      setActive(box);
+      setActive(box, 0.5); // Demo-Würfel hat festen Scale 0.5
       return;
     }
 
@@ -697,11 +721,17 @@ export class ARScene {
     model.setAttribute('gltf-model', urlOrNull);
     model.setAttribute('position', '0 0 0');
     model.setAttribute('rotation', '0 0 0');
-    model.setAttribute('scale', '1 1 1');
+    
+    // ✅ Initialen Scale aus DB anwenden
+    model.setAttribute('scale', `${initialScale} ${initialScale} ${initialScale}`);
+    
     anchor.appendChild(model);
+    
     model.addEventListener('model-loaded', () => {
+      console.log('[Model] GLTF loaded successfully');
     }, { once: true });
-    setActive(model);
+    
+    setActive(model, initialScale);
   }
 
   // Mappt Video-Normalized (0..1) auf NDC (-1..1), Y nach oben
@@ -838,7 +868,7 @@ export class ARScene {
           const sensitivityY = 0.008;
           
           this._targetYaw = this._touchState.startYaw + dx * sensitivityX;
-          const newPitch = this._touchState.startPitch - dy * sensitivityY;
+          const newPitch = this._touchState.startPitch + dy * sensitivityY;
           this._targetPitch = Math.max(-this._pitchLimit, Math.min(this._pitchLimit, newPitch));
         }
       } else if (e.touches.length === 2 && this._pinchState.active) {
@@ -847,7 +877,7 @@ export class ARScene {
         if (this._pinchState.startDist > 10) { // Mindestabstand
           const scaleFactor = currentDist / this._pinchState.startDist;
           let newScale = this._pinchState.startScale * scaleFactor;
-          newScale = Math.max(this._minScale, Math.min(this._maxScale, newScale));
+          newScale = Math.max(this._minScale * this._pinchState.startScale, Math.min(this._maxScale * this._pinchState.startScale, newScale));
           this._targetScale = newScale;
         }
       }
