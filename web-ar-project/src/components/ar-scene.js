@@ -60,7 +60,7 @@ export class ARScene {
     this._modelScale = 1.0;
     this._targetScale = 1.0;
     this._minScale = 0.2;   // Minimum 20%
-    this._maxScale = 5.0;   // Maximum 500%
+    this._maxScale = 15.0;   // Maximum 1500%
     this._scaleSmoothing = 0.15;
 
     this._infoPanelOpen = false;
