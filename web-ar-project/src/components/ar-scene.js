@@ -60,7 +60,7 @@ export class ARScene {
     this._modelScale = 1.0;
     this._targetScale = 1.0;
     this._minScale = 0.2;   // Minimum 20%
-    this._maxScale = 3.0;   // Maximum 300%
+    this._maxScale = 5.0;   // Maximum 500%
     this._scaleSmoothing = 0.15;
 
     this._infoPanelOpen = false;
@@ -876,9 +876,15 @@ export class ARScene {
         const currentDist = getTouchDistance(e.touches);
         if (this._pinchState.startDist > 10) { // Mindestabstand
           const scaleFactor = currentDist / this._pinchState.startDist;
-          let newScale = this._pinchState.startScale * scaleFactor;
-          newScale = Math.max(this._minScale * this._pinchState.startScale, Math.min(this._maxScale * this._pinchState.startScale, newScale));
-          this._targetScale = newScale;
+
+          const baseScale = this.currentModel?._baseScale || 1.0;
+          let newScale = baseScale * scaleFactor; 
+
+          newScale = Math.max(this._minScale, Math.min(this._maxScale, newScale));
+          
+          this._targetScale = newScale / baseScale; 
+          
+          console.log(`[Scale] Base: ${baseScale}, Factor: ${scaleFactor.toFixed(2)}, Final: ${newScale.toFixed(2)}`);
         }
       }
     }, { passive: true });
