@@ -3,6 +3,7 @@ import { ARScene } from './components/ar-scene.js';
 import { getModelById, getModelFileUrl } from './services/supabase.js';
 import { StateMachine, UIState } from './state-machine.js';
 import { NavigationService } from './services/navigation.js';
+import { audioGenerator, AudioGenerator } from './services/audio-generator.js';
 
 // ===== GLOBAL STATE =====
 let qrScanner = null;
@@ -40,6 +41,7 @@ function initLandingPageButtons() {
   if (startScanningBtn) {
     startScanningBtn.addEventListener('click', () => {
       console.log('[Landing] "Jetzt scannen" clicked');
+      audioGenerator.click();
       NavigationService.goToScanner();
     });
   }
@@ -47,6 +49,7 @@ function initLandingPageButtons() {
   if (demoBtn) {
     demoBtn.addEventListener('click', () => {
       console.log('[Landing] "Demo ohne QR" clicked');
+      audioGenerator.click();
       NavigationService.goToARScene('demo');
     });
   }
@@ -64,6 +67,7 @@ function initAppPageButtons() {
     startScanBtn.addEventListener('click', (e) => {
       e.preventDefault();
       console.log('[Scanner] "Scanner starten" clicked');
+      audioGenerator.click();
       startQRScanning();
     });
   }
@@ -83,6 +87,7 @@ function initAppPageButtons() {
     nextScanBtn.addEventListener('click', (e) => {
       e.preventDefault();
       console.log('[AR] "Nächsten QR scannen" clicked');
+      audioGenerator.click();
       goBackToScanner();
     });
   }
@@ -92,6 +97,7 @@ function initAppPageButtons() {
     backHomeBtn.addEventListener('click', (e) => {
       e.preventDefault();
       console.log('[AR] "Startseite" clicked');
+      audioGenerator.click();
       NavigationService.goHome();
     });
   }
@@ -102,6 +108,7 @@ function initAppPageButtons() {
     permitContinueBtn.addEventListener('click', (e) => {
       e.preventDefault();
       console.log('[Permission] Continuing...');
+      audioGenerator.click();
       startQRScanning(); // ← FIX: Direkt zum Scannen gehen
       hidePermissionModal();
     });
@@ -112,18 +119,9 @@ function initAppPageButtons() {
     permitCancelBtn.addEventListener('click', (e) => {
       e.preventDefault();
       console.log('[Permission] Cancelled');
+      audioGenerator.click();
       hidePermissionModal();
       NavigationService.goHome();
-    });
-  }
-
-  // ===== INFO PANEL CLOSE BUTTON =====
-  const infoCloseBtn = document.getElementById('info-close');
-  if (infoCloseBtn) {
-    infoCloseBtn.addEventListener('click', (e) => {
-      e.preventDefault();
-      console.log('[Info] Panel closed');
-      hideInfoPanel();
     });
   }
 }

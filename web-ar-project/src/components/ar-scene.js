@@ -7,6 +7,7 @@ if (!THREE) {
 
 import { DeviceMotionTracker } from './device-motion-tracker.js';
 import { HandTracker } from './hand-tracking.js';
+import { AudioGenerator } from '../services/audio-generator.js';
 
 export class ARScene {
   constructor() {
@@ -90,6 +91,9 @@ export class ARScene {
     this._targetFPS = 30;
     this._frameInterval = 1000 / this._targetFPS; // ~33.33ms
     this._lastFrameTime = 0;
+
+    // Audio
+    this.audio = new AudioGenerator();
   }
 
   async init() {
@@ -477,6 +481,8 @@ export class ARScene {
     this.grab[i].initialYaw = this._modelYaw;
     this.grab[i].initialPitch = this._modelPitch;
 
+    this.audio.grab();
+
     this._ensureOriginalColor(target);
     target.setAttribute('color', '#ff9500');
   }
@@ -507,6 +513,8 @@ export class ARScene {
       initialYaw: 0, 
       initialPitch: 0 
     };
+
+    this.audio.release();
   }
 
   _findAnchorNode(el) {
@@ -781,7 +789,7 @@ export class ARScene {
 
     title.textContent = this._currentModelInfo.title;
     desc.textContent = this._currentModelInfo.description;
-    
+    this.audio.infoOpen();
     // Meta-Infos anzeigen
     const metaObj = this._currentModelInfo.meta || {};
     meta.innerHTML = Object.entries(metaObj)
@@ -793,6 +801,7 @@ export class ARScene {
   }
 
   _closeInfoPanel() {
+    this.audio.infoClose();
     const panel = document.getElementById('info-panel');
     if (panel) panel.classList.add('hidden');
     this._infoPanelOpen = false;
@@ -908,6 +917,7 @@ export class ARScene {
           
           if (this.currentModel) {
             this._restoreOriginalColor(this.currentModel);
+            this.audio.release();
           }
           
           // Tap Detection (nur wenn nicht bewegt und nicht gepincht)
@@ -924,6 +934,7 @@ export class ARScene {
               this._targetYaw = 0;
               this._targetPitch = 0;
               this._targetScale = 1.0;
+              this.audio.success();
               console.log('👆👆 Double Tap → Reset (Rotation + Scale)');
               this._touchState.lastTap = 0;
             } else {
