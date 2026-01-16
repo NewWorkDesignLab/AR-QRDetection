@@ -11,7 +11,7 @@ const HAND_CONNECTIONS = [
   [0,13],[13,14],[14,15],[15,16],
   // Kleiner Finger
   [0,17],[17,18],[18,19],[19,20],
-  // Handfläche (optional für bessere Form)
+  // Handfläche
   [5,9],[9,13],[13,17],[5,17]
 ];
 
@@ -157,32 +157,18 @@ export class HandTracker {
             const nowTs = performance.now();
             
             // Bedingungen für Poke:
-            // 1. Zeigefinger gestreckt (Spitze höher als Mittelgelenk)
             const indexExtended = lm[8]?.y < lm[6]?.y;
-            
-            // 2. Andere Finger eingeklappt
             const middleFolded = !(lm[12]?.y < lm[10]?.y);
             const ringFolded = !(lm[16]?.y < lm[14]?.y);
             const pinkyFolded = !(lm[20]?.y < lm[18]?.y);
             const othersFolded = middleFolded && ringFolded && pinkyFolded;
-            
-            // 3. NICHT im Pinch (Daumen weit genug weg von Zeigefinger)
             const pinchDist = Math.hypot(thumb.x - tip.x, thumb.y - tip.y);
-            const notPinching = pinchDist > 0.08; // Größerer Abstand als Pinch-Threshold
-            
-            // 4. Daumen nicht gestreckt Richtung Zeigefinger (sonst ist es eher "pointing")
+            const notPinching = pinchDist > 0.08;
             const thumbTucked = lm[4]?.y > lm[3]?.y || pinchDist > 0.1;
-            
-            // 5. Bewegung muss nach "vorne" sein (y wird kleiner = nach oben im Bild)
             const movingForward = vy < -0.01;
-            
-            // 6. Geschwindigkeit im richtigen Bereich (nicht zu langsam, nicht zu schnell)
             const speedOk = speed > 0.03 && speed < 0.25;
-            
-            // 7. Cooldown einhalten
             const cooldownOk = nowTs - this.lastPokeTs[i] > this.pokeCooldownMs;
-            
-            // 8. Hand muss "stabil" sein (Handgelenk bewegt sich nicht zu viel)
+
             const wrist = lm[0];
             const prevWrist = this.prevWrist?.[i];
             let wristStable = true;
@@ -297,36 +283,19 @@ export class HandTracker {
       // Cursor-Ring am Index
       const tip = lm[8];
       const thumb = lm[4];
-      const pinched = tip && thumb ? Math.hypot(thumb.x - tip.x, thumb.y - tip.y) < 0.045 : false;
+
+      const gesture = this.currentGesture[i];
+      const colors = { pinch: '#ff9500', tap: '#d81765', poke: '#00ccff' };
       if (tip) {
         ctx.beginPath();
-        ctx.arc(tip.x * w, tip.y * h, pinched ? 18 : 12, 0, Math.PI * 2);
-        ctx.strokeStyle = pinched ? '#ff9500' : color;
+        ctx.arc(tip.x * w, tip.y * h, gesture != '-' ? 18 : 12, 0, Math.PI * 2);
+        ctx.strokeStyle = gesture ? colors[gesture] : color;
         ctx.lineWidth = 3;
         ctx.stroke();
         ctx.beginPath();
         ctx.arc(tip.x * w, tip.y * h, 4, 0, Math.PI * 2);
         ctx.fillStyle = '#fff';
         ctx.fill();
-      }
-
-      // Gesten-Indikator zeichnen
-      if (this.currentGesture[i] !== '-') {
-        const wrist = lm[0];
-        if (wrist && this.octx) {
-          const x = wrist.x * this.overlay.width;
-          const y = wrist.y * this.overlay.height - 30;
-          
-          this.octx.font = 'bold 16px system-ui';
-          this.octx.textAlign = 'center';
-          
-          const gesture = this.currentGesture[i];
-          const colors = { pinch: '#ff9500', tap: '#00ff00', poke: '#00ccff' };
-          const labels = { pinch: '✊ GRAB', tap: '👆 TAP', poke: '👉 POKE' };
-          
-          this.octx.fillStyle = colors[gesture] || '#fff';
-          this.octx.fillText(labels[gesture] || gesture, x, y);
-        }
       }
     });
   }
