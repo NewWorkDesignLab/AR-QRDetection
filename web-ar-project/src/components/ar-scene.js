@@ -370,7 +370,7 @@ export class ARScene {
     //Poke Interaction logic here
   }
 
-  onGrab({ handIndex, state, position, thumb, center }) {
+  onGrab({ handIndex, state, position, thumb, center, silent, wasTap }) {
     const i = handIndex ?? 0;
     const pinchCenter = center ||
       (thumb && position ? {
@@ -378,15 +378,26 @@ export class ARScene {
         y: (position.y + thumb.y) * 0.5
       } : position);
 
-    // fail-safe defaults
     const pc = pinchCenter || { x: 0.5, y: 0.5 };
-
     const centerNDC = this._videoToNDC(pc);
     this.cursorNDC[i].copy(centerNDC);
 
-    if (state === 'start') this._rotateStart(i, pc);
-    else if (state === 'move') this._rotateUpdate(i, pc);
-    else if (state === 'end') this._rotateEnd(i);
+    if (state === 'start') {
+      this._rotateStart(i, pc);
+      
+    } else if (state === 'sound') {
+      this.audio.grab();
+      
+    } else if (state === 'move') {
+      this._rotateUpdate(i, pc);
+      
+    } else if (state === 'end') {
+      this._rotateEnd(i);
+      
+      if (!silent && !wasTap) {
+        this.audio.release();
+      }
+    }
   }
 
   onPinchTap({ handIndex, position }) {
@@ -481,8 +492,6 @@ export class ARScene {
     this.grab[i].initialYaw = this._modelYaw;
     this.grab[i].initialPitch = this._modelPitch;
 
-    this.audio.grab();
-
     this._ensureOriginalColor(target);
     target.setAttribute('color', '#ff9500');
   }
@@ -513,8 +522,6 @@ export class ARScene {
       initialYaw: 0, 
       initialPitch: 0 
     };
-
-    this.audio.release();
   }
 
   _findAnchorNode(el) {

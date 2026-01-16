@@ -42,6 +42,10 @@ export class HandTracker {
 
     this.prevWrist = [null, null];
     this.emitLegacyGestures = false;
+
+    // Grab-Sound Verzögerung
+    this.grabSoundTimer = [null, null]; // Timer pro Hand
+    this.grabSoundDelay = 150; // ms - warte bevor Sound abgespielt wird
   }
 
   async init(videoElement) {
@@ -108,7 +112,33 @@ export class HandTracker {
               this.pinchMoveDist[i] = 0;
               this.pinchConfirmFrames[i] = 0;
               this._setGesture(i, 'pinch');
-              this.triggerCallbacks('grab', { handIndex: i, handedness, state: 'start', position: tip, thumb, center, landmarks: lm });
+              
+              // ✅ Trigger Grab OHNE Sound (Silent)
+              this.triggerCallbacks('grab', { 
+                handIndex: i, 
+                handedness, 
+                state: 'start', 
+                position: tip, 
+                thumb, 
+                center, 
+                landmarks: lm,
+                silent: true // ← Flag für AR-Scene
+              });
+              
+              this.grabSoundTimer[i] = setTimeout(() => {
+                if (this.pinchState[i] === 'hold') {
+                  // Immer noch im Pinch → wahrscheinlich Grab
+                  this.triggerCallbacks('grab', { 
+                    handIndex: i, 
+                    handedness, 
+                    state: 'sound', // ← Spezial-Event nur für Sound
+                    position: tip, 
+                    thumb, 
+                    center, 
+                    landmarks: lm 
+                  });
+                }
+              }, this.grabSoundDelay);
             
             } else if (wasPinching && !isReleased) {
               // PINCH HOLD
@@ -120,7 +150,16 @@ export class HandTracker {
                 this.pinchMoveDist[i] = Math.max(this.pinchMoveDist[i], Math.hypot(dx, dy));
               }
               
-              this.triggerCallbacks('grab', { handIndex: i, handedness, state: 'move', position: tip, thumb, center, landmarks: lm });
+              this.triggerCallbacks('grab', { 
+                handIndex: i, 
+                handedness, 
+                state: 'move', 
+                position: tip, 
+                thumb, 
+                center, 
+                landmarks: lm,
+                silent: true
+              });
             
             } else if (wasPinching && isReleased) {
               // PINCH END
@@ -129,16 +168,36 @@ export class HandTracker {
               const frames = this.pinchConfirmFrames[i];
               const cooldownOk = nowTs - this.lastPinchTapTs[i] > this.pinchTapCooldownMs;
               
+              // ✅ Cancel Grab-Sound Timer falls noch aktiv
+              if (this.grabSoundTimer[i]) {
+                clearTimeout(this.grabSoundTimer[i]);
+                this.grabSoundTimer[i] = null;
+              }
+              
               this.pinchState[i] = 'open';
               this._setGesture(i, '-');
-              this.triggerCallbacks('grab', { handIndex: i, handedness, state: 'end', position: tip, thumb, center, landmarks: lm });
               
               // PINCH-TAP Check
               const durationOk = pinchDuration > 80 && pinchDuration < 400;
               const notMoved = movedDist < 0.035;
               const stableEnough = frames >= 2;
               
-              if (durationOk && notMoved && stableEnough && cooldownOk) {
+              const isPinchTap = durationOk && notMoved && stableEnough && cooldownOk;
+              
+              // ✅ Trigger Grab-End mit Info ob es ein Tap war
+              this.triggerCallbacks('grab', { 
+                handIndex: i, 
+                handedness, 
+                state: 'end', 
+                position: tip, 
+                thumb, 
+                center, 
+                landmarks: lm,
+                wasTap: isPinchTap, // ← Flag für AR-Scene
+                silent: isPinchTap   // ← Kein Release-Sound bei Tap
+              });
+              
+              if (isPinchTap) {
                 this.lastPinchTapTs[i] = nowTs;
                 console.log('✅ Pinch-Tap!', { hand: i, duration: pinchDuration.toFixed(0) + 'ms' });
                 this._setGesture(i, 'tap');
