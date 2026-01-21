@@ -1,4 +1,4 @@
-import * as THREE from 'three';
+import * as THREE from 'https://esm.sh/three@0.160.0';
 
 class OneEuroFilter {
     constructor({ fMin = 0.8, beta = 0.4, dCutoff = 1.0 } = {}) {

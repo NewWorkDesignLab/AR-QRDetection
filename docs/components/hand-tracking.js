@@ -1,4 +1,4 @@
-import { HandLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
+import { HandLandmarker, FilesetResolver } from 'https://esm.sh/@mediapipe/tasks-vision@0.10.7';
 
 const HAND_CONNECTIONS = [
   // Daumen
