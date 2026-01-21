@@ -1,21 +1,28 @@
-/* filepath: /Users/philip/Documents/NWDL/QR Detection/AR QRDetection/web-ar-project/src/app.js */
+/* filepath: /Users/philip/Documents/NWDL/QR Detection/AR-QRDetection/web-ar-project/src/app.js */
 import { ARScene } from './components/ar-scene.js';
 import { getModelById, getModelFileUrl } from './services/supabase.js';
 import { StateMachine, UIState } from './state-machine.js';
 import { NavigationService } from './services/navigation.js';
 import { audioGenerator, AudioGenerator } from './services/audio-generator.js';
 
+// ===== BASE PATH FÜR GITHUB PAGES =====
+const basePath = window.location.pathname.includes('/AR-QRDetection/') 
+  ? '/AR-QRDetection' 
+  : '';
+
+console.log('[App] Base path:', basePath);
+
 // ===== GLOBAL STATE =====
 let qrScanner = null;
 let isScanning = false;
-let arScene = null;  // ← NEU: globale AR Scene Instanz
+let arScene = null;
 
 /**
  * ===== MAIN INITIALIZATION =====
  */
 document.addEventListener('DOMContentLoaded', () => {
   console.log('[App] Initializing...');
-  
+
   const isLandingPage = document.body.classList.contains('landing-page');
   
   if (isLandingPage) {
@@ -25,7 +32,7 @@ document.addEventListener('DOMContentLoaded', () => {
     console.log('[App] App page detected');
     initAppPageButtons();
     initQRScanner();
-    initARSceneManager(); // ← NEU
+    initARSceneManager();
   }
 });
 
@@ -42,7 +49,7 @@ function initLandingPageButtons() {
     startScanningBtn.addEventListener('click', () => {
       console.log('[Landing] "Jetzt scannen" clicked');
       audioGenerator.click();
-      NavigationService.goToScanner();
+      NavigationService.goToScanner(basePath);
     });
   }
 
@@ -50,7 +57,7 @@ function initLandingPageButtons() {
     demoBtn.addEventListener('click', () => {
       console.log('[Landing] "Demo ohne QR" clicked');
       audioGenerator.click();
-      NavigationService.goToARScene('demo');
+      NavigationService.goToARScene('demo', basePath);
     });
   }
 }
@@ -98,7 +105,7 @@ function initAppPageButtons() {
       e.preventDefault();
       console.log('[AR] "Startseite" clicked');
       audioGenerator.click();
-      NavigationService.goHome();
+      NavigationService.goHome(basePath);
     });
   }
 
@@ -109,7 +116,7 @@ function initAppPageButtons() {
       e.preventDefault();
       console.log('[Permission] Continuing...');
       audioGenerator.click();
-      startQRScanning(); // ← FIX: Direkt zum Scannen gehen
+      startQRScanning();
       hidePermissionModal();
     });
   }
@@ -121,7 +128,7 @@ function initAppPageButtons() {
       console.log('[Permission] Cancelled');
       audioGenerator.click();
       hidePermissionModal();
-      NavigationService.goHome();
+      NavigationService.goHome(basePath);
     });
   }
 }
@@ -216,7 +223,6 @@ async function onQRCodeScanned(decodedText) {
   }
 
   // Parse station ID from QR code
-  // Unterstützt: "id=123", "station=abc", "123", "abc"
   let stationId = decodedText;
   if (decodedText.includes('=')) {
     stationId = decodedText.split('=')[1];
@@ -250,9 +256,6 @@ async function enterDemoMode() {
  */
 async function goBackToScanner() {
   console.log('[Nav] Going back to scanner...');
-
-  // Einfach die Seite neu laden - das setzt alles zurück
-  // und bringt uns zurück zum Onboarding-Screen
   window.location.reload();
 }
 
@@ -269,23 +272,19 @@ async function showARScene(stationId) {
   }
 
   try {
-    // 1. Initialisiere AR Szene (Kamera, Hand Tracking, etc.)
     console.log('[AR] Initializing scene...');
     await arScene.init();
     console.log('[AR] Scene initialized');
 
-    // 2. Lade Modell basierend auf ID
     console.log('[AR] Loading model for ID:', stationId);
     await loadAndShowModel(stationId);
 
-    // 3. Zeige AR
     const arSceneEl = document.getElementById('ar-scene');
     if (arSceneEl) {
       arSceneEl.style.opacity = '1';
       arSceneEl.style.pointerEvents = 'auto';
     }
 
-    // 4. Zeige Navigation Bar
     showARNavBar();
 
     const hint = document.getElementById('grab-hint');
@@ -306,7 +305,6 @@ async function loadAndShowModel(stationId) {
 
   try {
     if (stationId === 'demo') {
-      // Demo-Würfel
       console.log('[Model] Loading demo cube');
       arScene.loadModelFromQr(null);
       arScene.setModelInfo({
@@ -317,7 +315,6 @@ async function loadAndShowModel(stationId) {
       return;
     }
 
-    // Versuche Modell aus Datenbank zu laden
     console.log('[Model] Fetching from database:', stationId);
     const model = await getModelById(stationId);
 
@@ -495,6 +492,7 @@ function hideInfoPanel() {
  * ===== EXPORTS FOR EXTERNAL USE =====
  */
 export {
+  basePath,
   showARScene,
   hideARScene,
   showInfoPanel,

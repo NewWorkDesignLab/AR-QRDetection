@@ -3,13 +3,13 @@
  * URL-Parameter Handling für direkte AR-Starts
  */
 
-export const NavigationService = {
+export class NavigationService {
   /**
    * Prüfe URL-Parameter und navigiere entsprechend
    * ?station=abc → Direkt zum Scanner mit Station
    * Keine Parameter → Landing Page
    */
-  initializeRouting() {
+  static initializeRouting() {
     const params = new URLSearchParams(window.location.search);
     const stationId = params.get('station');
 
@@ -26,64 +26,64 @@ export const NavigationService = {
     if (window.location.pathname.includes('app.html')) {
       this.showARApp();
     }
-  },
+  }
 
   /**
    * Zeige Landing Page
    */
-  showLandingPage() {
+  static showLandingPage() {
     // Falls wir nicht auf index.html sind, navigiere dorthin
     if (!window.location.pathname.includes('index.html') && window.location.pathname !== '/') {
       window.location.href = '/';
     }
     document.body.classList.add('landing-page');
-  },
+  }
 
   /**
    * Navigiere zum QR Scanner
    */
-  goToScanner(stationId = null) {
-    let url = '/app.html?scan=true';
+  static goToScanner(stationId = null, basePath = '') {
+    let url = basePath + '/app.html?scan=true';
     if (stationId) {
       url += `&station=${stationId}`;
     }
     window.location.href = url;
-  },
+  }
 
   /**
    * Navigiere zur AR Scene (app.html mit ar=true)
    */
-  goToARScene(stationId) {
-    window.location.href = `/app.html?ar=true&station=${stationId}`;
-  },
+  static goToARScene(id, basePath = '') {
+    window.location.href = basePath + '/app.html?model=' + id;
+  }
 
   /**
    * Zurück zur Landing Page
    */
-  goHome() {
-    window.location.href = '/';
-  },
+  static goHome(basePath = '') {
+    window.location.href = basePath + '/index.html';
+  }
 
   /**
    * Extrahiere Station aus URL
    */
-  getStationFromURL() {
+  static getStationFromURL() {
     const params = new URLSearchParams(window.location.search);
     return params.get('station');
-  },
+  }
 
   /**
    * Prüfe ob wir im Scanner sind
    */
-  isScannerMode() {
+  static isScannerMode() {
     const params = new URLSearchParams(window.location.search);
     return params.get('scan') === 'true';
-  },
+  }
 
   /**
    * Prüfe ob wir in AR sind
    */
-  isARMode() {
+  static isARMode() {
     const params = new URLSearchParams(window.location.search);
     return params.get('ar') === 'true';
   }
