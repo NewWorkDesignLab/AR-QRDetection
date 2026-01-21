@@ -3,7 +3,7 @@ import basicSsl from '@vitejs/plugin-basic-ssl';
 
 export default defineConfig({
   plugins: [basicSsl()],
-  root: 'src',
+  root: 'docs',
   build: {
     outDir: '../dist',
   },
