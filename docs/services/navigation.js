@@ -3,6 +3,11 @@
  * URL-Parameter Handling für direkte AR-Starts
  */
 
+// ===== BASE PATH FÜR GITHUB PAGES =====
+const basePath = window.location.pathname.includes('/AR-QRDetection/') 
+  ? '/AR-QRDetection' 
+  : '';
+
 export class NavigationService {
   /**
    * Prüfe URL-Parameter und navigiere entsprechend
@@ -34,7 +39,7 @@ export class NavigationService {
   static showLandingPage() {
     // Falls wir nicht auf index.html sind, navigiere dorthin
     if (!window.location.pathname.includes('index.html') && window.location.pathname !== '/') {
-      window.location.href = '/';
+      window.location.href = basePath + '/index.html';
     }
     document.body.classList.add('landing-page');
   }
@@ -42,7 +47,7 @@ export class NavigationService {
   /**
    * Navigiere zum QR Scanner
    */
-  static goToScanner(stationId = null, basePath = '') {
+  static goToScanner(stationId = null) {
     let url = basePath + '/app.html?scan=true';
     if (stationId) {
       url += `&station=${stationId}`;
@@ -53,14 +58,14 @@ export class NavigationService {
   /**
    * Navigiere zur AR Scene (app.html mit ar=true)
    */
-  static goToARScene(id, basePath = '') {
+  static goToARScene(id) {
     window.location.href = basePath + '/app.html?model=' + id;
   }
 
   /**
    * Zurück zur Landing Page
    */
-  static goHome(basePath = '') {
+  static goHome() {
     window.location.href = basePath + '/index.html';
   }
 
@@ -87,4 +92,4 @@ export class NavigationService {
     const params = new URLSearchParams(window.location.search);
     return params.get('ar') === 'true';
   }
-};
+}

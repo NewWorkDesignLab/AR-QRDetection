@@ -49,7 +49,7 @@ function initLandingPageButtons() {
     startScanningBtn.addEventListener('click', () => {
       console.log('[Landing] "Jetzt scannen" clicked');
       audioGenerator.click();
-      NavigationService.goToScanner(basePath);
+      NavigationService.goToScanner();
     });
   }
 
@@ -57,7 +57,7 @@ function initLandingPageButtons() {
     demoBtn.addEventListener('click', () => {
       console.log('[Landing] "Demo ohne QR" clicked');
       audioGenerator.click();
-      NavigationService.goToARScene('demo', basePath);
+      NavigationService.goToARScene('demo');
     });
   }
 }
@@ -105,7 +105,7 @@ function initAppPageButtons() {
       e.preventDefault();
       console.log('[AR] "Startseite" clicked');
       audioGenerator.click();
-      NavigationService.goHome(basePath);
+      NavigationService.goHome();
     });
   }
 
@@ -128,7 +128,7 @@ function initAppPageButtons() {
       console.log('[Permission] Cancelled');
       audioGenerator.click();
       hidePermissionModal();
-      NavigationService.goHome(basePath);
+      NavigationService.goHome();
     });
   }
 }
