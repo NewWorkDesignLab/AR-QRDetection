@@ -6,7 +6,13 @@ npm run dev
 <head>
   <meta charset="utf-8">
   <title>Web AR mit Hand Tracking</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+  <script>
+  document.addEventListener('gesturestart', (e) => e.preventDefault());
+  document.addEventListener('touchmove', (e) => {
+    if (e.touches.length > 1) e.preventDefault();
+  }, { passive: false });
+  </script>
   <script src="https://aframe.io/releases/1.4.0/aframe.min.js"></script>
   <script src="https://raw.githack.com/AR-js-org/AR.js/master/aframe/build/aframe-ar.js"></script>
   <!-- QR Scanner Lib -->
@@ -15,7 +21,7 @@ npm run dev
   <link rel="stylesheet" href="./styles/main.css">
   <link rel="stylesheet" href="./styles/ui.css">
 </head>
-<body>
+<body class="ar-view">
   <div id="qr-scanner">
     <div class="onboarding" id="onboarding">
       <h2>So startest du</h2>

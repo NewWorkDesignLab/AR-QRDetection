@@ -1,7 +1,29 @@
+html {
+  margin: 0;
+  padding: 0;
+}
+
 body {
     margin: 0;
-    overflow: hidden;
+    padding: 0;
     font-family: Arial, sans-serif;
+}
+
+/* AR-spezifische Regeln nur für die AR-Seite */
+body.ar-view {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    touch-action: none;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+}
+
+body.ar-view html {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
 }
 
 h1 {
@@ -78,10 +100,12 @@ a-scene {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  z-index: 9000; /* Reduziert, damit Modal drüber kann */
+  z-index: 9000;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
-  padding: 16px 12px 24px;
+  overscroll-behavior: contain;
+  margin: 0;
+  padding: 0;
 }
 
 #hand-overlay {
@@ -230,6 +254,7 @@ canvas {
   position: relative;
   z-index: 9002;
   pointer-events: auto;
+  padding: 16px 12px 24px;
 }
 .onboarding .steps {
   padding-left: 18px;
