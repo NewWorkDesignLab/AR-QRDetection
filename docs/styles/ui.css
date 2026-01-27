@@ -133,6 +133,7 @@ body.landing-page {
 
 .landing-info,
 .landing-tutorial {
+  margin-top: var(--spacing-2xl);
   margin-bottom: var(--spacing-2xl);
 }
 
@@ -163,7 +164,7 @@ body.landing-page {
   font-size: var(--font-size-sm);
   line-height: 1.8;
   color: var(--color-text-muted);
-  margin-bottom: var(--spacing-sm);
+  margin-bottom: var(--spacing-lg);
   position: relative;
   padding-left: 28px;
 }
@@ -647,3 +648,51 @@ button:focus {
     transition: none;
   }
 }
+
+/* ===== Loading Overlay ===== */
+.loading-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--color-bg-overlay);
+  color: var(--color-text);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  z-index: 10000;
+}
+.loading-overlay.hidden { display: none; }
+
+.spinner {
+  width: 48px;
+  height: 48px;
+  border: 4px solid rgba(255,255,255,0.3);
+  border-top-color: var(--color-primary);
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite;
+  margin-bottom: 12px;
+}
+.loading-text { font-size: var(--font-size-base); }
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ===== Marker Hint ===== */
+.marker-hint {
+  position: fixed;
+  bottom: 96px;           /* höher, über den Buttons */
+  left: 50%;
+  transform: translate(-50%, 0);
+  background: var(--color-bg-overlay);
+  color: var(--color-text);
+  padding: 10px 14px;
+  border: 1px solid var(--color-border-light);
+  border-radius: 10px;
+  z-index: 9000;
+  opacity: 0;
+  transition: opacity .25s ease;
+  pointer-events: none;
+  text-align: center;
+  width: calc(100% - 32px);
+  max-width: 360px;
+}
+.marker-hint.visible { opacity: 1; }

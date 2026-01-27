@@ -33,6 +33,12 @@ document.addEventListener('DOMContentLoaded', () => {
     initAppPageButtons();
     initQRScanner();
     initARSceneManager();
+    
+    // Auto-start QR Scanner
+    console.log('[App] Auto-starting QR scanner...');
+    setTimeout(() => {
+      startQRScanning();
+    }, 500); // Kleine Verzögerung für Kamera-Init
   }
 });
 
@@ -43,23 +49,19 @@ function initLandingPageButtons() {
   console.log('[Landing] Initializing buttons...');
 
   const startScanningBtn = document.getElementById('start-scanning-btn');
-  const demoBtn = document.getElementById('demo-btn');
+  const startScanningBtn2 = document.getElementById('start-scanning-btn-2');
 
-  if (startScanningBtn) {
-    startScanningBtn.addEventListener('click', () => {
-      console.log('[Landing] "Jetzt scannen" clicked');
-      audioGenerator.click();
-      NavigationService.goToScanner();
-    });
-  }
+  const btns = [startScanningBtn, startScanningBtn2];
 
-  if (demoBtn) {
-    demoBtn.addEventListener('click', () => {
-      console.log('[Landing] "Demo ohne QR" clicked');
-      audioGenerator.click();
-      NavigationService.goToARScene('demo');
-    });
-  }
+  btns.forEach((btn) => {
+    if (btn) {
+      btn.addEventListener('click', () => {
+        console.log('[Landing] "Jetzt scannen" clicked');
+        audioGenerator.click();
+        NavigationService.goToScanner();
+      });
+    }
+  });
 }
 
 /**
@@ -145,6 +147,56 @@ async function initARSceneManager() {
   } catch (err) {
     console.error('[ARScene] Init error:', err);
   }
+
+  // Marker-Events für Hinweis
+  const marker = document.getElementById('hiroMarker');
+  if (marker) {
+    let markerVisible = false;
+    let lostTimer = null;
+    let checkTimer = null;
+
+    marker.addEventListener('markerFound', () => {
+      console.log('[Marker] Found');
+      markerVisible = true;
+      hideMarkerHint();
+      
+      // Stoppe Polling wenn Marker gefunden
+      if (checkTimer) {
+        clearInterval(checkTimer);
+        checkTimer = null;
+      }
+    });
+
+    marker.addEventListener('markerLost', () => {
+      console.log('[Marker] Lost');
+      markerVisible = false;
+      clearTimeout(lostTimer);
+      lostTimer = setTimeout(() => {
+        if (!markerVisible) {
+          showMarkerHint('Marker nicht erkannt. Bitte näher herantreten und Marker im Sichtfeld halten.');
+        }
+      }, 700);
+    });
+
+    // Polling: Prüfe alle 2 Sekunden ob Marker sichtbar ist
+    // Startet nur wenn AR-Szene aktiv und noch kein Marker gefunden wurde
+    const startMarkerCheck = () => {
+      if (checkTimer) return; // bereits am laufen
+      
+      checkTimer = setInterval(() => {
+        const arSceneEl = document.getElementById('ar-scene');
+        const scannerVisible = document.getElementById('qr-scanner').style.display !== 'none';
+        
+        // Nur zeigen wenn AR-Szene sichtbar, Scanner weg und Marker noch nicht gefunden
+        if (arSceneEl && arSceneEl.style.opacity === '1' && !scannerVisible && !markerVisible) {
+          showMarkerHint('Marker nicht erkannt. Bitte näher herantreten und Marker im Sichtfeld halten.');
+        }
+      }, 2000);
+    };
+
+    // Starte Polling wenn AR-Szene geladen wird
+    window.addEventListener('ar-scene-loaded', startMarkerCheck);
+  }
 }
 
 /**
@@ -191,8 +243,6 @@ async function startQRScanning() {
       onQRScanError
     );
 
-    // Hide onboarding, show scanner UI
-    hideOnboarding();
     showQRFrame();
   } catch (err) {
     console.error('[QRScanner] Error:', err);
@@ -222,17 +272,20 @@ async function onQRCodeScanned(decodedText) {
     console.error('[QRScanner] Error stopping:', err);
   }
 
-  // Parse station ID from QR code
+  // Lade-Overlay sofort nach Scan zeigen
+  showLoading('Lade AR-Szene…');
+  hideMarkerHint();
+
+  // ID ermitteln
   let stationId = decodedText;
   if (decodedText.includes('=')) {
     stationId = decodedText.split('=')[1];
   }
-
   console.log('[QR] Extracted ID:', stationId);
 
-  // Hide scanner, show AR
   hideScanner();
   await showARScene(stationId);
+  hideLoading();
 }
 
 /**
@@ -240,15 +293,6 @@ async function onQRCodeScanned(decodedText) {
  */
 function onQRScanError(error) {
   // Silently ignore (normal while scanning)
-}
-
-/**
- * ===== DEMO MODE (ohne QR) =====
- */
-async function enterDemoMode() {
-  console.log('[Demo] Entering demo mode...');
-  hideScanner();
-  await showARScene('demo');
 }
 
 /**
@@ -289,6 +333,9 @@ async function showARScene(stationId) {
 
     const hint = document.getElementById('grab-hint');
     if (hint) hint.style.display = 'block';
+
+    // Event für Marker-Polling triggern
+    window.dispatchEvent(new Event('ar-scene-loaded'));
 
   } catch (err) {
     console.error('[AR] Error showing scene:', err);
@@ -360,6 +407,42 @@ async function loadAndShowModel(stationId) {
 /**
  * ===== UI STATE FUNCTIONS =====
  */
+function showLoading(text = 'Lade…') {
+  const el = document.getElementById('loading-overlay');
+  if (el) {
+    const t = el.querySelector('.loading-text');
+    if (t) t.textContent = text;
+    el.classList.remove('hidden');
+  }
+}
+
+function hideLoading() {
+  const el = document.getElementById('loading-overlay');
+  if (el) el.classList.add('hidden');
+}
+
+function showMarkerHint(text) {
+  const el = document.getElementById('marker-hint');
+  const markerStatus = document.getElementById('marker-status');
+  const scanner = document.getElementById('qr-scanner');
+
+  const markerStatusVisible = markerStatus && markerStatus.style.display !== 'none';
+  const scannerVisible = scanner && scanner.style.display !== 'none';
+  const markerText = document.getElementById('marker-state').textContent.toLowerCase();
+
+  // nicht zeigen, wenn QR-Overlay aktiv, kein Marker-Status sichtbar oder IMU-Modus aktiv
+  if (scannerVisible || !markerStatusVisible || markerText.includes('imu')) return;
+
+  if (el) {
+    el.textContent = text || 'Marker nicht erkannt. Bitte näher herantreten.';
+    el.classList.add('visible');
+  }
+}
+
+function hideMarkerHint() {
+  const el = document.getElementById('marker-hint');
+  if (el) el.classList.remove('visible');
+}
 
 function showScanner() {
   console.log('[UI] Showing scanner...');
@@ -378,24 +461,6 @@ function hideScanner() {
   if (qrScannerDiv) {
     qrScannerDiv.style.display = 'none';
     qrScannerDiv.style.opacity = '0';
-  }
-}
-
-function showOnboarding() {
-  console.log('[UI] Showing onboarding...');
-  const onboarding = document.getElementById('onboarding');
-  if (onboarding) {
-    onboarding.style.display = 'block';
-    onboarding.style.opacity = '1';
-  }
-}
-
-function hideOnboarding() {
-  console.log('[UI] Hiding onboarding...');
-  const onboarding = document.getElementById('onboarding');
-  if (onboarding) {
-    onboarding.style.display = 'none';
-    onboarding.style.opacity = '0';
   }
 }
 

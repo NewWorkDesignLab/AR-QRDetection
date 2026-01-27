@@ -23,24 +23,20 @@ npm run dev
 </head>
 <body class="ar-view">
   <div id="qr-scanner">
-    <div class="onboarding" id="onboarding">
-      <h2>So startest du</h2>
-      <ol class="steps">
-        <li>QR-Code scannen</li>
-        <li>Marker ins Bild halten</li>
-        <li>Mit Pinch/ Pinch Tap interagieren</li>
-      </ol>
-      <div class="cta-row">
-        <button id="start-scan" class="primary">Scanner starten</button>
-        <button id="skip-qr" class="ghost">Ohne QR starten (Demo)</button>
-      </div>
-    </div>
-
     <div class="qr-frame">
       <div id="qr-reader"></div>
     </div>
     <p id="qr-hint">Halte den Code in den Rahmen</p>
   </div>
+
+  <!-- Loading Overlay -->
+  <div id="loading-overlay" class="loading-overlay hidden">
+    <div class="spinner"></div>
+    <p class="loading-text">Lade Modell…</p>
+  </div>
+
+  <!-- Marker-Hinweis -->
+  <div id="marker-hint" class="marker-hint">Marker nicht erkannt. Bitte näher herantreten.</div>
 
   <div id="permission-modal" class="modal hidden">
     <div class="modal-card">
