@@ -696,3 +696,42 @@ button:focus {
   max-width: 360px;
 }
 .marker-hint.visible { opacity: 1; }
+
+.tutorial-media {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.tutorial-gif {
+  margin-top: var(--spacing-sm);
+  margin-left: calc(50% - 128px);
+  margin-right: auto;
+  width: 100%;
+  max-width: 200px;
+  aspect-ratio: auto;
+  background: var(--color-bg-darker);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  border: 2px solid var(--color-border);
+  display: flex;
+  align-self: center;
+  position: relative;
+}
+
+.tutorial-gif video,
+.tutorial-gif img {
+  width: 100%;
+  height: auto;
+  object-fit: contain;
+  display: flex;
+}
+
+/* Fallback wenn Bild nicht geladen */
+.tutorial-gif::before {
+  content: '';
+  font-size: 48px;
+  position: absolute;
+  opacity: 0.3;
+  pointer-events: none;
+}

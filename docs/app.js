@@ -173,7 +173,7 @@ async function initARSceneManager() {
       clearTimeout(lostTimer);
       lostTimer = setTimeout(() => {
         if (!markerVisible) {
-          showMarkerHint('Marker nicht erkannt. Bitte näher herantreten und Marker im Sichtfeld halten.');
+          //showMarkerHint('Marker nicht erkannt. Bitte näher herantreten und Marker im Sichtfeld halten.');
         }
       }, 700);
     });

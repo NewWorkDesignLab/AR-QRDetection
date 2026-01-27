@@ -614,13 +614,18 @@ export class ARScene {
 
         vm.position.copy(pos);
         vm.quaternion.identity();
-        vm.scale.copy(this.markerScaleAtLoss);
+        vm.scale.set(1, 1, 1);
 
-        // Smoothed Rotation anwenden
+        // Smoothed Rotation + Scale anwenden
         if (this.currentModel) {
           this._modelYaw += (this._targetYaw - this._modelYaw) * this._smoothingFactor;
           this._modelPitch += (this._targetPitch - this._modelPitch) * this._smoothingFactor;
           this._applyRotation(this.currentModel, this._modelYaw, this._modelPitch);
+          
+          this._modelScale += (this._targetScale - this._modelScale) * this._scaleSmoothing;
+          const baseScale = this.currentModel._baseScale || 1;
+          const s = baseScale * this._modelScale;
+          this.currentModel.object3D.scale.set(s, s, s);
         }
       }
 
