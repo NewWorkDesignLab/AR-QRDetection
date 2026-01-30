@@ -8,6 +8,7 @@ if (!THREE) {
 import { DeviceMotionTracker } from './device-motion-tracker.js';
 import { HandTracker } from './hand-tracking.js';
 import { AudioGenerator } from '../services/audio-generator.js';
+import './interaction-outline.js'; // ← Outline-Komponente laden
 
 export class ARScene {
   constructor() {
@@ -494,6 +495,9 @@ export class ARScene {
 
     this._ensureOriginalColor(target);
     target.setAttribute('color', '#ff9500');
+    
+    // ✅ Outline beim Greifen anzeigen
+    target.emit('interaction-start');
   }
 
   _rotateUpdate(i, pinchCenterNorm) {
@@ -514,6 +518,9 @@ export class ARScene {
   _rotateEnd(i) {
     if (this.grab[i].active && this.grab[i].target) {
       this._restoreOriginalColor(this.grab[i].target);
+      
+      // ✅ Outline beim Loslassen verstecken
+      this.grab[i].target.emit('interaction-end');
     }
     this.grab[i] = { 
       active: false, 
@@ -731,8 +738,12 @@ export class ARScene {
       box.setAttribute('color', '#FF9500');
       box.setAttribute('position', '0 0.5 0');
       box.setAttribute('scale', '0.5 0.5 0.5');
+      
+      // ✅ Outline-Komponente hinzufügen
+      box.setAttribute('interaction-outline', `color: #00ffff` );
+      
       anchor.appendChild(box);
-      setActive(box, 0.5); // Demo-Würfel hat festen Scale 0.5
+      setActive(box, 0.5);
       return;
     }
 
@@ -744,6 +755,9 @@ export class ARScene {
     
     // ✅ Initialen Scale aus DB anwenden
     model.setAttribute('scale', `${initialScale} ${initialScale} ${initialScale}`);
+    
+    // ✅ Outline-Komponente mit Cyan-Farbe hinzufügen
+    model.setAttribute('interaction-outline', `color: #00ffff`);
     
     anchor.appendChild(model);
     
