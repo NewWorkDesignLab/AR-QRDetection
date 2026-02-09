@@ -382,7 +382,9 @@ async function loadAndShowModel(stationId) {
           'ID': model.id,
           'Scale': model.scale,
           ...(typeof model.meta === 'object' ? model.meta : {})
-        }
+        },
+        ctaLabel: model.cta_label,
+        ctaValue: model.cta_value
       });
     } else {
       console.warn('[Model] Model not found for ID:', stationId);
@@ -527,12 +529,29 @@ function hidePermissionModal() {
   }
 }
 
-function showInfoPanel(title, description, metadata) {
+function showInfoPanel(title, description, metadata, ctaLabel, ctaValue) {
   console.log('[UI] Showing info panel...');
   const panel = document.getElementById('info-panel');
   if (panel) {
     document.getElementById('info-title').textContent = title || 'Info';
     document.getElementById('info-description').textContent = description || 'Keine Beschreibung verfügbar';
+
+    // CTA Button verwalten
+    const ctaBtn = document.getElementById('info-cta-btn');
+    if (ctaBtn && ctaLabel && ctaValue) {
+      ctaBtn.textContent = ctaLabel;
+      ctaBtn.classList.remove('hidden');
+      
+      // Event Listener entfernen und neu setzen
+      const newBtn = ctaBtn.cloneNode(true);
+      ctaBtn.parentNode.replaceChild(newBtn, ctaBtn);
+      
+      newBtn.addEventListener('click', () => {
+        handleCtaClick(ctaValue);
+      });
+    } else if (ctaBtn) {
+      ctaBtn.classList.add('hidden');
+    }
 
     const metaDiv = document.getElementById('info-meta');
     if (metaDiv && metadata) {
@@ -542,6 +561,37 @@ function showInfoPanel(title, description, metadata) {
     panel.classList.remove('hidden');
     panel.style.display = 'flex';
   }
+}
+
+function handleCtaClick(ctaValue) {
+  if (!ctaValue) return;
+  
+  console.log('[CTA] Clicked with value:', ctaValue);
+  audioGenerator.click();
+  
+  // Email-Erkennung
+  if (ctaValue.includes('@') || ctaValue.toLowerCase().startsWith('mailto:')) {
+    const mailtoUrl = ctaValue.startsWith('mailto:') ? ctaValue : `mailto:${ctaValue}`;
+    window.location.href = mailtoUrl;
+    return;
+  }
+  
+  // Telefonnummer-Erkennung
+  if (ctaValue.match(/^[\d\s\+\-\(\)]+$/) || ctaValue.toLowerCase().startsWith('tel:')) {
+    const telUrl = ctaValue.startsWith('tel:') ? ctaValue : `tel:${ctaValue.replace(/\s/g, '')}`;
+    window.location.href = telUrl;
+    return;
+  }
+  
+  // URL-Erkennung
+  if (ctaValue.startsWith('http://') || ctaValue.startsWith('https://') || ctaValue.startsWith('www.')) {
+    const url = ctaValue.startsWith('www.') ? `https://${ctaValue}` : ctaValue;
+    window.open(url, '_blank');
+    return;
+  }
+  
+  // Fallback: Als URL behandeln
+  window.open(`https://${ctaValue}`, '_blank');
 }
 
 function hideInfoPanel() {
