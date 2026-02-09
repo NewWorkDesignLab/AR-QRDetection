@@ -369,6 +369,8 @@ async function loadAndShowModel(stationId) {
       console.log('[Model] Found model:', model.title);
       const modelUrl = getModelFileUrl(model.model_url);
       console.log('[Model] Model URL:', modelUrl);
+      console.log('[Model] CTA Label:', model.cta_label);
+      console.log('[Model] CTA Value:', model.cta_value);
       
       const initialScale = parseFloat(model.scale) || 1.0;
       console.log('[Model] Initial scale from DB:', initialScale);
@@ -529,40 +531,6 @@ function hidePermissionModal() {
   }
 }
 
-function showInfoPanel(title, description, metadata, ctaLabel, ctaValue) {
-  console.log('[UI] Showing info panel...');
-  const panel = document.getElementById('info-panel');
-  if (panel) {
-    document.getElementById('info-title').textContent = title || 'Info';
-    document.getElementById('info-description').textContent = description || 'Keine Beschreibung verfügbar';
-
-    // CTA Button verwalten
-    const ctaBtn = document.getElementById('info-cta-btn');
-    if (ctaBtn && ctaLabel && ctaValue) {
-      ctaBtn.textContent = ctaLabel;
-      ctaBtn.classList.remove('hidden');
-      
-      // Event Listener entfernen und neu setzen
-      const newBtn = ctaBtn.cloneNode(true);
-      ctaBtn.parentNode.replaceChild(newBtn, ctaBtn);
-      
-      newBtn.addEventListener('click', () => {
-        handleCtaClick(ctaValue);
-      });
-    } else if (ctaBtn) {
-      ctaBtn.classList.add('hidden');
-    }
-
-    const metaDiv = document.getElementById('info-meta');
-    if (metaDiv && metadata) {
-      metaDiv.innerHTML = metadata;
-    }
-
-    panel.classList.remove('hidden');
-    panel.style.display = 'flex';
-  }
-}
-
 function handleCtaClick(ctaValue) {
   if (!ctaValue) return;
   
@@ -594,15 +562,6 @@ function handleCtaClick(ctaValue) {
   window.open(`https://${ctaValue}`, '_blank');
 }
 
-function hideInfoPanel() {
-  console.log('[UI] Hiding info panel...');
-  const panel = document.getElementById('info-panel');
-  if (panel) {
-    panel.classList.add('hidden');
-    panel.style.display = 'none';
-  }
-}
-
 /**
  * ===== EXPORTS FOR EXTERNAL USE =====
  */
@@ -610,7 +569,5 @@ export {
   basePath,
   showARScene,
   hideARScene,
-  showInfoPanel,
-  hideInfoPanel,
   goBackToScanner
 };

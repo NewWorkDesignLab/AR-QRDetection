@@ -68,7 +68,9 @@ export class ARScene {
     this._currentModelInfo = {
       title: 'Unbekanntes Modell',
       description: 'Keine Beschreibung verfügbar.',
-      meta: {}
+      meta: {},
+      ctaLabel: null,
+      ctaValue: null
     };
 
     // Touch-State
@@ -796,17 +798,29 @@ export class ARScene {
     const title = document.getElementById('info-title');
     const desc = document.getElementById('info-description');
     const meta = document.getElementById('info-meta');
+    const ctaBtn = document.getElementById('info-cta-btn');
 
     if (!panel) return;
 
     title.textContent = this._currentModelInfo.title;
     desc.textContent = this._currentModelInfo.description;
     this.audio.infoOpen();
+
     // Meta-Infos anzeigen
     const metaObj = this._currentModelInfo.meta || {};
     meta.innerHTML = Object.entries(metaObj)
       .map(([k, v]) => `<div><strong>${k}:</strong> ${v}</div>`)
       .join('');
+
+    // CTA Button verwalten
+    if (ctaBtn && this._currentModelInfo.ctaLabel && this._currentModelInfo.ctaValue) {
+      ctaBtn.textContent = this._currentModelInfo.ctaLabel;
+      ctaBtn.classList.remove('hidden');
+      ctaBtn.style.display = 'inline-flex';
+      ctaBtn.onclick = () => this._handleCtaClick(this._currentModelInfo.ctaValue);
+    } else if (ctaBtn) {
+      ctaBtn.classList.add('hidden');
+    }
 
     panel.classList.remove('hidden');
     this._infoPanelOpen = true;
@@ -823,8 +837,41 @@ export class ARScene {
     this._currentModelInfo = {
       title: info.title || 'Unbekanntes Modell',
       description: info.description || 'Keine Beschreibung verfügbar.',
-      meta: info.meta || {}
+      meta: info.meta || {},
+      ctaLabel: info.ctaLabel || null,
+      ctaValue: info.ctaValue || null
     };
+  }
+
+  _handleCtaClick(ctaValue) {
+    if (!ctaValue) return;
+
+    console.log('[CTA] Clicked with value:', ctaValue);
+    this.audio.click();
+
+    // Email
+    if (ctaValue.includes('@') || ctaValue.toLowerCase().startsWith('mailto:')) {
+      const mailtoUrl = ctaValue.startsWith('mailto:') ? ctaValue : `mailto:${ctaValue}`;
+      window.location.href = mailtoUrl;
+      return;
+    }
+
+    // Telefon
+    if (ctaValue.match(/^[\d\s\+\-\(\)]+$/) || ctaValue.toLowerCase().startsWith('tel:')) {
+      const telUrl = ctaValue.startsWith('tel:') ? ctaValue : `tel:${ctaValue.replace(/\s/g, '')}`;
+      window.location.href = telUrl;
+      return;
+    }
+
+    // URL
+    if (ctaValue.startsWith('http://') || ctaValue.startsWith('https://') || ctaValue.startsWith('www.')) {
+      const url = ctaValue.startsWith('www.') ? `https://${ctaValue}` : ctaValue;
+      window.open(url, '_blank');
+      return;
+    }
+
+    // Fallback
+    window.open(`https://${ctaValue}`, '_blank');
   }
 
   _initTouchControls() {
