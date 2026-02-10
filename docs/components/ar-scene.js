@@ -96,6 +96,8 @@ export class ARScene {
 
     // Audio
     this.audio = new AudioGenerator();
+
+    this._baseModelQuat = new THREE.Quaternion(); // NEU: Basis-Rotation
   }
 
   async init() {
@@ -273,9 +275,31 @@ export class ARScene {
         this._lostDebounceTimer = null;
       }
 
+      console.log('[ARScene] Marker found');
       this.markerVisible = true;
       this.markerLostTime = null;
       if (stateEl) { stateEl.textContent = 'Marker: sichtbar (Tracking)'; stateEl.style.color = '#0f0'; }
+      
+      // NEU: Basis-Rotation nach Marker-Orientierung setzen
+      const orientation = this.motionTracker.detectMarkerOrientationFromDevice();
+      console.log(`📍 Marker-Orientierung (Device): ${orientation}`);
+
+      switch (orientation) {
+        case 'floor':
+          // Marker liegt auf Boden → Modell steht aufrecht
+          this._baseModelQuat.setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI/2);
+          break;
+        case 'wall':
+          // Marker an Wand → Modell kippt nach vorne (von Wand weg)
+          this._baseModelQuat.identity();
+          break;
+        case 'ceiling':
+          // Marker an Decke → Modell hängt nach unten
+          this._baseModelQuat.setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI/2);
+          break;
+        default:
+          this._baseModelQuat.identity();
+      }
 
       // Collider sicherstellen
       this.realMarker.querySelectorAll('.interactable').forEach(el => this._ensureInteractionCollider(el));
@@ -577,12 +601,20 @@ export class ARScene {
         vm.quaternion.identity();
 
         if (this.currentModel) {
-          // Rotation interpolieren
+          // User‑Rotation smoothen
           this._modelYaw += (this._targetYaw - this._modelYaw) * this._smoothingFactor;
           this._modelPitch += (this._targetPitch - this._modelPitch) * this._smoothingFactor;
-          this._applyRotation(this.currentModel, this._modelYaw, this._modelPitch);
-          
-          // Scale interpolieren
+
+          // User‑Rotation (Yaw + Pitch)
+          const qYaw = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), this._modelYaw);
+          const qPitch = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), this._modelPitch);
+          const qUser = new THREE.Quaternion().multiplyQuaternions(qPitch, qYaw);
+
+          // Basis‑Rotation * User‑Rotation
+          const finalQuat = new THREE.Quaternion().multiplyQuaternions(this._baseModelQuat, qUser);
+          this.currentModel.object3D.quaternion.copy(finalQuat).normalize();
+
+          // Scale
           this._modelScale += (this._targetScale - this._modelScale) * this._scaleSmoothing;
           const baseScale = this.currentModel._baseScale || 1;
           const s = baseScale * this._modelScale;
@@ -635,7 +667,6 @@ export class ARScene {
       requestAnimationFrame(tick);
     };
     
-    // Starte Loop mit initialem Timestamp
     requestAnimationFrame(tick);
   }
 
