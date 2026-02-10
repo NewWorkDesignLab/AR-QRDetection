@@ -737,7 +737,7 @@ button:focus {
 }
 
 .info-cta-btn {
-  margin: 16px 0;
+  margin: 16px 0 0 0;
   padding: 12px 24px;
   font-size: 16px;
   font-weight: 600;
@@ -746,7 +746,8 @@ button:focus {
   cursor: pointer;
   transition: all 0.2s ease;
   width: 100%;
-  max-width: 300px;
+  max-width: none;
+  align-self: stretch;
 }
 
 .info-cta-btn.hidden {
