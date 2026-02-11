@@ -52,6 +52,10 @@ export class ARScene {
     this._pitchLimit = Infinity;
     this._rotationSensitivity = 0.9;
 
+    this._baseModelQuat = new THREE.Quaternion(); // Basis-Rotation
+    this._useMarkerQuat = false
+    
+
     // NEU: Smoothing für Rotation
     this._targetYaw = 0;
     this._targetPitch = 0;
@@ -96,8 +100,6 @@ export class ARScene {
 
     // Audio
     this.audio = new AudioGenerator();
-
-    this._baseModelQuat = new THREE.Quaternion(); // NEU: Basis-Rotation
   }
 
   async init() {
@@ -284,21 +286,40 @@ export class ARScene {
       const orientation = this.motionTracker.detectMarkerOrientationFromDevice();
       console.log(`📍 Marker-Orientierung (Device): ${orientation}`);
 
-      switch (orientation) {
-        case 'floor':
-          // Marker liegt auf Boden → Modell steht aufrecht
-          this._baseModelQuat.setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI/2);
-          break;
-        case 'wall':
-          // Marker an Wand → Modell kippt nach vorne (von Wand weg)
-          this._baseModelQuat.identity();
-          break;
-        case 'ceiling':
-          // Marker an Decke → Modell hängt nach unten
-          this._baseModelQuat.setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI/2);
-          break;
-        default:
-          this._baseModelQuat.identity();
+      if (this._useMarkerQuat) {
+        switch (orientation) {
+          case 'floor':
+            // Marker liegt auf Boden → Modell steht aufrecht
+            this._baseModelQuat.identity();
+            break;
+          case 'wall':
+            // Marker an Wand → Modell kippt nach vorne (von Wand weg)
+            this._baseModelQuat.setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI/2);
+            break;
+          case 'ceiling':
+            // Marker an Decke → Modell hängt nach unten
+            this._baseModelQuat.setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI/2);
+            break;
+          default:
+            this._baseModelQuat.setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI/2);
+        }
+      } else {
+        switch (orientation) {
+          case 'floor':
+            // Marker liegt auf Boden → Modell steht aufrecht
+            this._baseModelQuat.setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI/2);
+            break;
+          case 'wall':
+            // Marker an Wand → Modell kippt nach vorne (von Wand weg)
+            this._baseModelQuat.identity();
+            break;
+          case 'ceiling':
+            // Marker an Decke → Modell hängt nach unten
+            this._baseModelQuat.setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI/2);
+            break;
+          default:
+            this._baseModelQuat.identity();
+        }
       }
 
       // Collider sicherstellen
@@ -610,8 +631,16 @@ export class ARScene {
           const qPitch = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), this._modelPitch);
           const qUser = new THREE.Quaternion().multiplyQuaternions(qPitch, qYaw);
 
+          // Marker-Rotation
+          if(this._useMarkerQuat) {
+            const markerQuat = rm.getWorldQuaternion(new THREE.Quaternion()).normalize();
+          }
+
           // Basis‑Rotation * User‑Rotation
           const finalQuat = new THREE.Quaternion().multiplyQuaternions(this._baseModelQuat, qUser);
+          if(this._useMarkerQuat) {
+            finalQuat.multiply(markerQuat);
+          }
           this.currentModel.object3D.quaternion.copy(finalQuat).normalize();
 
           // Scale
