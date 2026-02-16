@@ -369,13 +369,17 @@ async function loadAndShowModel(stationId) {
       console.log('[Model] Found model:', model.title);
       const modelUrl = getModelFileUrl(model.model_url);
       console.log('[Model] Model URL:', modelUrl);
-      console.log('[Model] CTA Label:', model.cta_label);
-      console.log('[Model] CTA Value:', model.cta_value);
       
       const initialScale = parseFloat(model.scale) || 1.0;
       console.log('[Model] Initial scale from DB:', initialScale);
-      
-      arScene.loadModelFromQr(modelUrl, initialScale);
+
+      const mediaType = getMediaTypeFromUrl(modelUrl);
+
+      if (mediaType === 'image' || mediaType === 'video') {
+        arScene.loadMediaFromUrl(modelUrl, mediaType, initialScale);
+      } else {
+        arScene.loadModelFromQr(modelUrl, initialScale);
+      }
       
       arScene.setModelInfo({
         title: model.title || 'Unbekanntes Modell',
@@ -406,6 +410,20 @@ async function loadAndShowModel(stationId) {
       meta: { 'Station ID': stationId }
     });
   }
+}
+
+function getMediaTypeFromUrl(url) {
+  if (!url) return null;
+
+  const clean = url.split('?')[0].split('#')[0];
+  const ext = clean.slice(clean.lastIndexOf('.') + 1).toLowerCase();
+
+  const imageExts = ['jpg', 'jpeg', 'png', 'webp', 'gif', 'bmp', 'svg'];
+  const videoExts = ['mp4', 'webm', 'ogv', 'mov', 'm4v'];
+
+  if (imageExts.includes(ext)) return 'image';
+  if (videoExts.includes(ext)) return 'video';
+  return null;
 }
 
 /**

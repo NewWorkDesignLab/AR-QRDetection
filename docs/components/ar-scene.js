@@ -752,6 +752,84 @@ export class ARScene {
       .forEach(el => { el.object3D.visible = flag; });
   }
 
+  loadMediaFromUrl(url, mediaType, initialScale = 1.0) {
+    const anchor = this.virtualMarker || this.realMarker;
+    if (!anchor) return;
+
+    // Remove loading label from BOTH markers
+    this.realMarker?.querySelectorAll('.loading-label').forEach(n => n.remove());
+    this.virtualMarker?.querySelectorAll('.loading-label').forEach(n => n.remove());
+
+    // Remove old models
+    anchor.querySelectorAll('.model-root').forEach(n => n.remove());
+
+    // Remove old media assets
+    this._cleanupMediaAssets();
+
+    const plane = document.createElement('a-plane');
+    plane.classList.add('interactable', 'model-root');
+    plane.setAttribute('position', '0 0.5 0');
+    plane.setAttribute('rotation', '0 0 0');
+    plane.setAttribute('width', '1');
+    plane.setAttribute('height', '1');
+    plane.setAttribute('material', 'side: double; color: #ffffff; transparent: true');
+
+    const assets = this._ensureAssetsContainer();
+    if (!assets) return;
+
+    const assetId = `media-asset-${Date.now()}`;
+
+    if (mediaType === 'image') {
+      const img = document.createElement('img');
+      img.id = assetId;
+      img.crossOrigin = 'anonymous';
+      img.src = url;
+
+      img.addEventListener('load', () => {
+        const ar = (img.naturalWidth || 1) / (img.naturalHeight || 1);
+        if (ar >= 1) {
+          plane.setAttribute('width', '1');
+          plane.setAttribute('height', (1 / ar).toString());
+        } else {
+          plane.setAttribute('width', ar.toString());
+          plane.setAttribute('height', '1');
+        }
+      }, { once: true });
+
+      assets.appendChild(img);
+      plane.setAttribute('material', `src: #${assetId}; side: double; transparent: true`);
+    }
+
+    if (mediaType === 'video') {
+      const vid = document.createElement('video');
+      vid.id = assetId;
+      vid.crossOrigin = 'anonymous';
+      vid.src = url;
+      vid.loop = true;
+      vid.muted = true;
+      vid.autoplay = true;
+      vid.playsInline = true;
+
+      vid.addEventListener('loadedmetadata', () => {
+        const ar = (vid.videoWidth || 1) / (vid.videoHeight || 1);
+        if (ar >= 1) {
+          plane.setAttribute('width', '1');
+          plane.setAttribute('height', (1 / ar).toString());
+        } else {
+          plane.setAttribute('width', ar.toString());
+          plane.setAttribute('height', '1');
+        }
+        vid.play().catch(() => {});
+      }, { once: true });
+
+      assets.appendChild(vid);
+      plane.setAttribute('material', `src: #${assetId}; side: double; transparent: true`);
+    }
+
+    anchor.appendChild(plane);
+    this._setActiveEntity(plane, initialScale);
+  }
+
   loadModelFromQr(urlOrNull, initialScale = 1.0) {
     const anchor = this.virtualMarker || this.realMarker;
     if (!anchor) return;
@@ -763,29 +841,6 @@ export class ARScene {
     // Remove old models
     anchor.querySelectorAll('.model-root').forEach(n => n.remove());
 
-    const setActive = (el, baseScale) => {
-      this.currentModel = el;
-      this._ensureInteractionCollider(el);
-      
-      // Reset Rotation
-      this._modelYaw = 0;
-      this._modelPitch = 0;
-      this._targetYaw = 0;
-      this._targetPitch = 0;
-
-      this._modelScale = 1.0  // Interaktiver Multiplikator (bleibt 1.0)
-      this._targetScale = 1.0;
-
-      el._baseScale = baseScale;
-
-      const s = baseScale * this._modelScale;
-      el.object3D.scale.set(s, s, s);
-      
-      el.object3D.visible = this.markerVisible;
-      
-      console.log(`[Model] Loaded with base scale: ${baseScale}, applied: ${s}`);
-    };
-
     if (!urlOrNull) {
       // Demo-Würfel
       const box = document.createElement('a-box');
@@ -794,7 +849,7 @@ export class ARScene {
       box.setAttribute('position', '0 0.5 0');
       box.setAttribute('scale', '0.5 0.5 0.5');
       anchor.appendChild(box);
-      setActive(box, 0.5); // Demo-Würfel hat festen Scale 0.5
+      this._setActiveEntity(box, 0.5);
       return;
     }
 
@@ -803,8 +858,6 @@ export class ARScene {
     model.setAttribute('gltf-model', urlOrNull);
     model.setAttribute('position', '0 0 0');
     model.setAttribute('rotation', '0 0 0');
-    
-    // ✅ Initialen Scale aus DB anwenden
     model.setAttribute('scale', `${initialScale} ${initialScale} ${initialScale}`);
     
     anchor.appendChild(model);
@@ -813,7 +866,7 @@ export class ARScene {
       console.log('[Model] GLTF loaded successfully');
     }, { once: true });
     
-    setActive(model, initialScale);
+    this._setActiveEntity(model, initialScale);
   }
 
   // Mappt Video-Normalized (0..1) auf NDC (-1..1), Y nach oben
@@ -1084,5 +1137,46 @@ export class ARScene {
     }, { passive: true });
 
     console.log('📱 Touch-Controls initialisiert (Rotation + Scale)');
+  }
+
+  _ensureAssetsContainer() {
+    const scene = document.querySelector('a-scene');
+    if (!scene) return null;
+
+    let assets = scene.querySelector('a-assets');
+    if (!assets) {
+      assets = document.createElement('a-assets');
+      scene.appendChild(assets);
+    }
+    return assets;
+  }
+
+  _cleanupMediaAssets() {
+    const assets = document.querySelector('a-assets');
+    if (!assets) return;
+    assets.querySelectorAll('[id^="media-asset-"]').forEach(n => n.remove());
+  }
+
+  _setActiveEntity(el, baseScale) {
+    this.currentModel = el;
+    this._ensureInteractionCollider(el);
+
+    // Reset Rotation
+    this._modelYaw = 0;
+    this._modelPitch = 0;
+    this._targetYaw = 0;
+    this._targetPitch = 0;
+
+    this._modelScale = 1.0;
+    this._targetScale = 1.0;
+
+    el._baseScale = baseScale;
+
+    const s = baseScale * this._modelScale;
+    el.object3D.scale.set(s, s, s);
+
+    el.object3D.visible = this.markerVisible;
+
+    console.log(`[Model] Loaded with base scale: ${baseScale}, applied: ${s}`);
   }
 }
