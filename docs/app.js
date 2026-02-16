@@ -1,9 +1,8 @@
 /* filepath: /Users/philip/Documents/NWDL/QR Detection/AR-QRDetection/web-ar-project/src/app.js */
 import { ARScene } from './components/ar-scene.js';
-import { getModelById, getModelFileUrl } from './services/supabase.js';
-import { StateMachine, UIState } from './state-machine.js';
+import { getProjectBySlug, getProjectActiveContent, getContentById, getModelFileUrl, getMediaTypeFromContentType } from './services/supabase.js';
 import { NavigationService } from './services/navigation.js';
-import { audioGenerator, AudioGenerator } from './services/audio-generator.js';
+import { audioGenerator } from './services/audio-generator.js';
 
 // ===== BASE PATH FÜR GITHUB PAGES =====
 const basePath = window.location.pathname.includes('/AR-QRDetection/') 
@@ -346,72 +345,104 @@ async function showARScene(stationId) {
 
 /**
  * ===== LOAD AND SHOW MODEL =====
+ * Neu: Nutzt die neue Datenbankarchitektur
  */
 async function loadAndShowModel(stationId) {
-  console.log(`[Model] Loading model for station: ${stationId}`);
+  console.log(`[Model] Loading content for station: ${stationId}`);
 
   try {
+    // Demo-Mode
     if (stationId === 'demo') {
       console.log('[Model] Loading demo cube');
       arScene.loadModelFromQr(null);
       arScene.setModelInfo({
         title: 'Demo-Würfel',
-        description: 'Dies ist ein Demo-Modell. Scanne einen QR-Code mit einer gültigen Modell-ID, um ein 3D-Modell zu laden.',
+        description: 'Dies ist ein Demo-Modell. Scanne einen QR-Code mit einer gültigen ID, um Content zu laden.',
         meta: { 'Tipp': 'Nutze die ID "items_test" zum Testen' }
       });
       return;
     }
 
     console.log('[Model] Fetching from database:', stationId);
-    const model = await getModelById(stationId);
-
-    if (model) {
-      console.log('[Model] Found model:', model.title);
-      const modelUrl = getModelFileUrl(model.model_url);
-      console.log('[Model] Model URL:', modelUrl);
-      
-      const initialScale = parseFloat(model.scale) || 1.0;
-      console.log('[Model] Initial scale from DB:', initialScale);
-
-      const mediaType = getMediaTypeFromUrl(modelUrl);
-
-      if (mediaType === 'image' || mediaType === 'video') {
-        arScene.loadMediaFromUrl(modelUrl, mediaType, initialScale);
-      } else {
-        arScene.loadModelFromQr(modelUrl, initialScale);
-      }
-      
-      arScene.setModelInfo({
-        title: model.title || 'Unbekanntes Modell',
-        description: model.description || 'Keine Beschreibung verfügbar.',
-        meta: {
-          'ID': model.id,
-          'Scale': model.scale,
-          ...(typeof model.meta === 'object' ? model.meta : {})
-        },
-        ctaLabel: model.cta_label,
-        ctaValue: model.cta_value
-      });
+    
+    // Versuche als Project-Slug (von QR-Code)
+    let content = null;
+    const project = await getProjectBySlug(stationId);
+    
+    if (project) {
+      console.log('[Model] Project found:', project.title);
+      content = await getProjectActiveContent(project.id);
     } else {
-      console.warn('[Model] Model not found for ID:', stationId);
+      // Fallback: Versuche direkt als Content-ID
+      content = await getContentById(stationId);
+    }
+
+    if (content) {
+      console.log('[Model] Content loaded:', content.name);
+      console.log('[Model] Content type:', content.type);
+      
+      const fileUrl = getModelFileUrl(content.file_url);
+      console.log('[Model] File URL:', fileUrl);
+
+      const mediaType = getMediaTypeFromContentType(content.type);
+      const initialScale = project.scale || 1.0;
+
+      // Lade je nach Content-Typ
+      if (mediaType === 'image') {
+        arScene.loadMediaFromUrl(fileUrl, 'image', initialScale);
+      } else if (mediaType === 'video') {
+        arScene.loadMediaFromUrl(fileUrl, 'video', initialScale);
+      } else if (mediaType === 'model') {
+        arScene.loadModelFromQr(fileUrl, initialScale);
+      } else if (mediaType === 'audio') {
+        // Audio-Handling (z.B. als Placeholder)
+        console.warn('[Model] Audio content nicht unterstützt in AR');
+        arScene.loadModelFromQr(null);
+        arScene.setModelInfo({
+          title: content.name || 'Audio-Datei',
+          description: content.description || 'Audio wird nicht in AR angezeigt',
+          meta: {}
+        });
+        return;
+      }
+
+      // Model-Info anzeigen
+      arScene.setModelInfo({
+        title: content.name || 'Unbekannter Inhalt',
+        description: content.description || 'Keine Beschreibung verfügbar.',
+        meta: {
+          'ID': content.id,
+          'Typ': content.type,
+          ...(content.meta && typeof content.meta === 'object' ? content.meta : {})
+        },
+        ctaLabel: content.cta_label,
+        ctaValue: content.cta_value
+      });
+
+    } else {
+      console.warn('[Model] Content not found for ID:', stationId);
       arScene.loadModelFromQr(null);
       arScene.setModelInfo({
-        title: 'Modell nicht gefunden',
+        title: 'Inhalt nicht gefunden',
         description: `Die ID "${stationId}" wurde nicht in der Datenbank gefunden.`,
-        meta: { 'Gescannte ID': stationId }
+        meta: { 'Gesuchte ID': stationId }
       });
     }
   } catch (err) {
-    console.error('[Model] Error loading model:', err);
+    console.error('[Model] Error loading content:', err);
     arScene.loadModelFromQr(null);
     arScene.setModelInfo({
       title: 'Fehler beim Laden',
-      description: 'Es gab einen Fehler beim Laden des Modells: ' + err.message,
+      description: 'Es gab einen Fehler beim Laden des Inhalts: ' + err.message,
       meta: { 'Station ID': stationId }
     });
   }
 }
 
+/**
+ * ===== LEGACY: getMediaTypeFromUrl =====
+ * Fallback für alte URLs, wird durch getMediaTypeFromContentType ersetzt
+ */
 function getMediaTypeFromUrl(url) {
   if (!url) return null;
 

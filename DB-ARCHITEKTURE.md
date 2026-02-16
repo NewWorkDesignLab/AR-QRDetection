@@ -59,6 +59,7 @@ Reusable AR scenes or models.
 - created_by (int8 FK to User.id)
 - created_at (timestamptz)
 - updated_at (timestamptz)
+- scale (float8)
 - is_public (boolean)
 
 Rules:
