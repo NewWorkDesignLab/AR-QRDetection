@@ -120,11 +120,11 @@ Rules:
 # 3. Public AR Loading Flow
 
 1. QR code resolves to:
-   /ar/:slug
+   url/?id=Project.qr_code
 
-2. Query project by slug:
+2. Query project by qr_code:
    select * from projects
-   where slug = ?
+   where qr_code = ?
    and status = 'approved'
 
 3. Query active content:

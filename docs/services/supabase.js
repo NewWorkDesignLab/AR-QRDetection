@@ -1,22 +1,25 @@
 import { createClient } from '@supabase/supabase-js';
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+//const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+//const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+const supabaseUrl = "https://nwhgpnpghhtnnuedddza.supabase.co";
+const supabaseKey = "sb_publishable_LsHgNqBcLJ7VAKrReAgL4g_NYD1gVmG";
 
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 /**
- * ===== GET PROJECT BY SLUG (QR Resolution) =====
- * QR codes resolve to projects, not directly to content
+ * ===== GET PROJECT BY QR CODE =====
+ * QR codes resolve directly to projects via qr_code field
  */
-export async function getProjectBySlug(slug) {
+export async function getProjectByQRCode(qrCode) {
   try {
-    console.log('[Supabase] Fetching project by slug:', slug);
+    console.log('[Supabase] Fetching project by QR code:', qrCode);
     
     const { data, error } = await supabase
-      .from('projects')
+      .from('Project')
       .select('*')
-      .eq('qr_code', slug)
+      .eq('qr_code', qrCode)
       .eq('status', 'approved')
       .single();
 
@@ -35,13 +38,13 @@ export async function getProjectBySlug(slug) {
 
 /**
  * ===== GET ACTIVE CONTENT FOR PROJECT =====
- * Holt das aktive Content-Item aus der Project_Contents Join-Tabelle
+ * Via Project_Contents join table, aber wir nutzen project.content_active
  */
 export async function getProjectActiveContent(projectId) {
   try {
     console.log('[Supabase] Fetching active content for project:', projectId);
 
-    // Variante 1: content_active ist direkt in projects gespeichert
+    // Hole das aktive Content-Item aus projects.content_active
     const { data: project, error: projError } = await supabase
       .from('projects')
       .select('content_active')
@@ -101,49 +104,8 @@ export async function getContentById(contentId) {
 }
 
 /**
- * ===== GET MODEL (Legacy) =====
- * Fallback für alte Struktur, wird zu getContentById umgewandelt
- */
-export async function getModelById(stationId) {
-  // Versuche zuerst, es als Content-ID zu interpretieren
-  const content = await getContentById(stationId);
-  if (content) {
-    return {
-      id: content.id,
-      title: content.name,
-      description: content.description,
-      model_url: content.file_url, // Mapping für alte API
-      type: content.type,
-      scale: 1.0, // Default, DB speichert das noch separat?
-      thumbnail_url: content.thumbnail_url,
-      meta: {}
-    };
-  }
-
-  // Fallback: Versuche als Project-Slug
-  const project = await getProjectBySlug(stationId);
-  if (project) {
-    const activeContent = await getProjectActiveContent(project.id);
-    if (activeContent) {
-      return {
-        id: activeContent.id,
-        title: activeContent.name,
-        description: activeContent.description,
-        model_url: activeContent.file_url,
-        type: activeContent.type,
-        scale: activeContent.scale || 1.0,
-        thumbnail_url: activeContent.thumbnail_url,
-        meta: {}
-      };
-    }
-  }
-
-  return null;
-}
-
-/**
  * ===== GET FILE URL FROM STORAGE =====
- * Supabase Storage URLs sind bereits public und absolute
+ * Supabase Storage URLs sind bereits public und absolut
  */
 export function getModelFileUrl(fileUrl) {
   if (!fileUrl) return null;
