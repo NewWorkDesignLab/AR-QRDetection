@@ -8,6 +8,7 @@ if (!THREE) {
 import { DeviceMotionTracker } from './device-motion-tracker.js';
 import { HandTracker } from './hand-tracking.js';
 import { AudioGenerator } from '../services/audio-generator.js';
+import { QRPoseTracker } from './qr-pose-tracker.js';
 
 export class ARScene {
   constructor() {
@@ -100,18 +101,25 @@ export class ARScene {
 
     // Audio
     this.audio = new AudioGenerator();
+
+    // QR Marker Toggle
+    this.useQRMarker = false; // ← Toggle zwischen AR.js Marker und QR Code
+    this.qrTracker = null;
+    this._qrDetectionLoop = null;
+    this._lastQRPose = null;
+    this._qrPoseTimeoutMs = 250;
+    this._lastQRSeenTs = 0; // NEU: QR gesehen, auch ohne Pose
   }
 
   async init() {
     await this.setupARScene();
+
+    this.toggleMarkerMode(true)
   }
 
   async setupARScene() {
     await this._waitForARCamera(4000);
-
     await this._ensureARVideoReady();
-
-    // iOS: ggf. vor dem Start Motion-Permission anfragen (best effort)
     await this._ensureMotionPermission();
 
     const video = document.querySelector('#arjs-video') || this._fallbackVideo || this._videoEl;
@@ -121,7 +129,6 @@ export class ARScene {
         this.handTracker.on('cursor', (d) => this.onCursor(d));
         this.handTracker.on('poke',   (d) => this.onPoke(d));
         this.handTracker.on('grab',   (d) => this.onGrab(d));
-        // Pinch-Tap → Info-Panel öffnen/schließen
         this.handTracker.on('pinch-tap', (d) => this.onPinchTap(d));
       } catch (e) {
         console.warn('HandTracking Fehler:', e);
@@ -131,17 +138,161 @@ export class ARScene {
     }
 
     this.useDeviceMotion = await this.motionTracker.init();
+    
+    // QR Tracker initialisieren (aber nicht starten)
+    if (this.useQRMarker) {
+      await this._initQRTracking(video);
+    }
+    
     this.createVirtualMarker();
     this.setupMarkerPersistence();
-    this._loop(); // Wichtig: bleibt erhalten für virtuellen Marker
+    this._loop();
 
-    // Info-Panel Close-Button
     document.getElementById('info-close')?.addEventListener('click', () => {
       this._closeInfoPanel();
     });
 
-    // Touch-Events initialisieren
     this._initTouchControls();
+  }
+
+  async _initQRTracking(videoEl) {
+    try {
+      // NEU: auf OpenCV warten, wenn vorhanden
+      await this._waitForOpenCV(5000);
+
+      this.qrTracker = new QRPoseTracker({ tagSizeMeters: 0.08, fovDeg: 60 });
+      await this.qrTracker.init(videoEl, { fovDeg: 60 });
+      console.log('[QR] QRPoseTracker initialisiert');
+      this._startQRDetectionLoop();
+    } catch (e) {
+      console.warn('[QR] QRPoseTracker Init Fehler:', e);
+      this.useQRMarker = false;
+    }
+  }
+
+  async _waitForOpenCV(timeoutMs = 5000) {
+    if (window.cv && window.cv.Mat) return;
+    await new Promise((resolve, reject) => {
+      const start = performance.now();
+      const tick = () => {
+        if (window.cv && window.cv.Mat) return resolve();
+        if (performance.now() - start > timeoutMs) return resolve(); // ohne CV weiter
+        requestAnimationFrame(tick);
+      };
+      tick();
+    });
+  }
+
+  _startQRDetectionLoop() {
+    if (this._qrDetectionLoop) cancelAnimationFrame(this._qrDetectionLoop);
+    
+    const tick = () => {
+      if (!this.useQRMarker || !this.qrTracker) {
+        this._qrDetectionLoop = null;
+        return;
+      }
+
+      const qrResult = this.qrTracker.detectAndEstimate();
+      
+      if (qrResult.ok && qrResult.id) {
+        this._lastQRSeenTs = performance.now();
+
+        // NEU: Position aus Ecken-Centroid approximieren (ohne solvePnP)
+        if (qrResult.corners) {
+          const centerX = (qrResult.corners[0].x + qrResult.corners[1].x + 
+                           qrResult.corners[2].x + qrResult.corners[3].x) / 4;
+          const centerY = (qrResult.corners[0].y + qrResult.corners[1].y + 
+                           qrResult.corners[2].y + qrResult.corners[3].y) / 4;
+
+          // Simple Projektion auf Z-Ebene
+          const ndcX = (centerX / this.qrTracker.canvas.width) * 2 - 1;
+          const ndcY = -(centerY / this.qrTracker.canvas.height) * 2 + 1;
+          
+          // Dummy Position (Z=1m vor Kamera)
+          const pos = new THREE.Vector3(ndcX * 0.5, ndcY * 0.5, -1.0);
+          const quat = new THREE.Quaternion();
+
+          this._lastQRPose = {
+            pos: pos,
+            quat: quat,
+            ts: performance.now()
+          };
+        }
+
+        this.markerVisible = true;
+        this.markerLostTime = null;
+
+        const stateEl = document.getElementById('marker-state');
+        if (stateEl) { 
+          stateEl.textContent = 'QR Code: erkannt (ohne Pose)'; 
+          stateEl.style.color = '#ffa500'; 
+        }
+        
+        if (!this._migratedToVirtual) {
+          this.moveEntitiesToVirtualMarker(this.realMarker);
+          this._migratedToVirtual = true;
+        }
+        
+        this._setModelsVisible(true);
+        if (this.useDeviceMotion) this.motionTracker.calibrate();
+      } else {
+        const age = this._lastQRSeenTs ? (performance.now() - this._lastQRSeenTs) : Infinity;
+        if (age > this._qrPoseTimeoutMs) {
+          this.markerVisible = false;
+          this.markerLostTime = Date.now();
+          const stateEl = document.getElementById('marker-state');
+          if (stateEl) { 
+            stateEl.textContent = 'QR Code: nicht erkannt'; 
+            stateEl.style.color = '#ff0'; 
+          }
+          this._setModelsVisible(false);
+        }
+      }
+
+      this._qrDetectionLoop = requestAnimationFrame(tick);
+    };
+    
+    this._qrDetectionLoop = requestAnimationFrame(tick);
+  }
+  
+  // Toggle-Funktion
+  toggleMarkerMode(useQR = null) {
+    if (useQR !== null) {
+      this.useQRMarker = useQR;
+    } else {
+      this.useQRMarker = !this.useQRMarker;
+    }
+
+    console.log(`[Mode] Switched to: ${this.useQRMarker ? 'QR Code' : 'AR.js Marker'}`);
+
+    if (this.useQRMarker) {
+      if (!this.qrTracker) {
+        const video = document.querySelector('#arjs-video') || this._fallbackVideo || this._videoEl;
+        this._initQRTracking(video);
+      } else {
+        this._startQRDetectionLoop();
+      }
+      // AR.js Marker deaktivieren
+      if (this.realMarker) {
+        this.realMarker.object3D.visible = false;
+      }
+    } else {
+      // QR Detection stoppen
+      if (this._qrDetectionLoop) {
+        cancelAnimationFrame(this._qrDetectionLoop);
+        this._qrDetectionLoop = null;
+      }
+      // AR.js Marker wieder aktivieren
+      if (this.realMarker) {
+        this.realMarker.object3D.visible = false; // (wird via AR.js gesteuert)
+      }
+      this.markerVisible = false;
+      const stateEl = document.getElementById('marker-state');
+      if (stateEl) { 
+        stateEl.textContent = 'Marker: wartend'; 
+        stateEl.style.color = '#999'; 
+      }
+    }
   }
 
   _waitForARCamera(timeoutMs=4000) {
@@ -272,6 +423,9 @@ export class ARScene {
     this.virtualMarker.object3D.visible = true;
 
     this.realMarker.addEventListener('markerFound', () => {
+      // NEU: im QR‑Modus ignorieren
+      if (this.useQRMarker) return;
+
       if (this._lostDebounceTimer) {
         clearTimeout(this._lostDebounceTimer);
         this._lostDebounceTimer = null;
@@ -350,6 +504,9 @@ export class ARScene {
     });
 
     this.realMarker.addEventListener('markerLost', () => {
+      // NEU: im QR‑Modus ignorieren
+      if (this.useQRMarker) return;
+
       if (this._lostDebounceTimer) clearTimeout(this._lostDebounceTimer);
       this._lostDebounceTimer = setTimeout(() => {
         this._lostDebounceTimer = null;
@@ -612,7 +769,25 @@ export class ARScene {
       const wasVisible = this._lastMarkerVisible;
       const isVisible = this.markerVisible;
 
-      if (isVisible && this.realMarker && this.virtualMarker) {
+      // QR‑Pose priorisieren
+      if (this.useQRMarker && this._lastQRPose) {
+        const age = performance.now() - this._lastQRPose.ts;
+        const isFresh = age <= this._qrPoseTimeoutMs;
+
+        if (isFresh) {
+          this.markerVisible = true;
+          const vm = this.virtualMarker?.object3D;
+          if (vm) {
+            vm.position.copy(this._lastQRPose.pos);
+            vm.quaternion.copy(this._lastQRPose.quat);
+            vm.scale.set(1, 1, 1);
+          }
+          this._setModelsVisible(true);
+        }
+      }
+
+      // NEU: AR.js Marker‑Pose nur anwenden, wenn NICHT im QR‑Modus
+      if (!this.useQRMarker && isVisible && this.realMarker && this.virtualMarker) {
         const rm = this.realMarker.object3D;
         const vm = this.virtualMarker.object3D;
         rm.updateMatrixWorld(true);
