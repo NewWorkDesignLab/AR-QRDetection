@@ -37,6 +37,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const qrCodeFromUrl = getQRCodeFromURL();
     if (qrCodeFromUrl) {
       console.log('[App] QR code from URL detected:', qrCodeFromUrl);
+      hideScanner();
+      hideQRFrame();
       setTimeout(() => {
         loadContentFromQRCode(qrCodeFromUrl);
       }, 500);
@@ -301,6 +303,10 @@ async function onQRCodeScanned(decodedText) {
   }
   console.log('[QR] Extracted ID:', qrCodeId);
 
+  const url = new URL(window.location);
+  url.searchParams.set('id', qrCodeId);
+  window.history.replaceState({}, document.title, url.toString());
+
   hideScanner();
   hideQRFrame();
   
@@ -319,6 +325,11 @@ function onQRScanError(error) {
  */
 async function goBackToScanner() {
   console.log('[Nav] Going back to scanner...');
+
+  const url = new URL(window.location);
+  url.searchParams.delete('id');
+  window.history.replaceState({}, document.title, url.toString());
+  
   window.location.reload();
 }
 
@@ -610,37 +621,6 @@ function hidePermissionModal() {
     modal.classList.add('hidden');
     modal.style.display = 'none';
   }
-}
-
-function handleCtaClick(ctaValue) {
-  if (!ctaValue) return;
-  
-  console.log('[CTA] Clicked with value:', ctaValue);
-  audioGenerator.click();
-  
-  // Email-Erkennung
-  if (ctaValue.includes('@') || ctaValue.toLowerCase().startsWith('mailto:')) {
-    const mailtoUrl = ctaValue.startsWith('mailto:') ? ctaValue : `mailto:${ctaValue}`;
-    window.location.href = mailtoUrl;
-    return;
-  }
-  
-  // Telefonnummer-Erkennung
-  if (ctaValue.match(/^[\d\s\+\-\(\)]+$/) || ctaValue.toLowerCase().startsWith('tel:')) {
-    const telUrl = ctaValue.startsWith('tel:') ? ctaValue : `tel:${ctaValue.replace(/\s/g, '')}`;
-    window.location.href = telUrl;
-    return;
-  }
-  
-  // URL-Erkennung
-  if (ctaValue.startsWith('http://') || ctaValue.startsWith('https://') || ctaValue.startsWith('www.')) {
-    const url = ctaValue.startsWith('www.') ? `https://${ctaValue}` : ctaValue;
-    window.open(url, '_blank');
-    return;
-  }
-  
-  // Fallback: Als URL behandeln
-  window.open(`https://${ctaValue}`, '_blank');
 }
 
 /**
