@@ -1,8 +1,5 @@
 import { createClient } from '@supabase/supabase-js';
 
-//const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-//const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
-
 const supabaseUrl = "https://nwhgpnpghhtnnuedddza.supabase.co";
 const supabaseKey = "sb_publishable_LsHgNqBcLJ7VAKrReAgL4g_NYD1gVmG";
 
@@ -14,22 +11,33 @@ const supabase = createClient(supabaseUrl, supabaseKey);
  */
 export async function getProjectByQRCode(qrCode) {
   try {
-    console.log('[Supabase] Fetching project by QR code:', qrCode);
+    const cleanQrCode = qrCode?.toString().trim();
+    console.log('[Supabase] Fetching project by QR code:', cleanQrCode);
     
     const { data, error } = await supabase
       .from('Project')
       .select('*')
-      .eq('qr_code', qrCode)
-      .eq('status', 'approved')
-      .single();
+      .eq('qr_code', cleanQrCode);
 
     if (error) {
       console.error('[Supabase] Error fetching project:', error);
       return null;
     }
+    
+    if (!data || data.length === 0) {
+      console.warn('[Supabase] No project found for QR code:', cleanQrCode);
+      return null;
+    }
 
-    console.log('[Supabase] Project found:', data.title);
-    return data;
+    const approvedProject = data.find(p => p.status === 'approved');
+    
+    if (!approvedProject) {
+      console.warn('[Supabase] No approved project found');
+      return data[0];
+    }
+
+    console.log('[Supabase] Project found:', approvedProject.title);
+    return approvedProject;
   } catch (err) {
     console.error('[Supabase] Exception:', err);
     return null;
@@ -38,36 +46,56 @@ export async function getProjectByQRCode(qrCode) {
 
 /**
  * ===== GET ACTIVE CONTENT FOR PROJECT =====
- * Via Project_Contents join table, aber wir nutzen project.content_active
+ * Via project.content_active
  */
 export async function getProjectActiveContent(projectId) {
   try {
     console.log('[Supabase] Fetching active content for project:', projectId);
 
-    // Hole das aktive Content-Item aus projects.content_active
-    const { data: project, error: projError } = await supabase
-      .from('projects')
-      .select('content_active')
-      .eq('id', projectId)
-      .single();
-
-    if (projError || !project?.content_active) {
-      console.warn('[Supabase] No active content ID found');
+    if (!projectId) {
+      console.warn('[Supabase] No project ID provided');
       return null;
     }
 
-    // Hole das Content-Item
-    const { data: content, error: contentError } = await supabase
-      .from('content')
+    const { data, error } = await supabase
+      .from('Project')
+      .select('content_active')
+      .eq('id', projectId);
+
+    if (error) {
+      console.error('[Supabase] Error fetching project content_active:', error);
+      return null;
+    }
+
+    if (!data || data.length === 0) {
+      console.warn('[Supabase] Project not found');
+      return null;
+    }
+
+    const project = data[0];
+    const contentId = project.content_active;
+
+    if (!contentId) {
+      console.warn('[Supabase] No active content ID in project');
+      return null;
+    }
+
+    const { data: contentData, error: contentError } = await supabase
+      .from('Content')
       .select('*')
-      .eq('id', project.content_active)
-      .single();
+      .eq('id', contentId);
 
     if (contentError) {
       console.error('[Supabase] Error fetching content:', contentError);
       return null;
     }
 
+    if (!contentData || contentData.length === 0) {
+      console.warn('[Supabase] Content not found');
+      return null;
+    }
+
+    const content = contentData[0];
     console.log('[Supabase] Content loaded:', content.name);
     return content;
   } catch (err) {
@@ -85,18 +113,23 @@ export async function getContentById(contentId) {
     console.log('[Supabase] Fetching content by ID:', contentId);
 
     const { data, error } = await supabase
-      .from('content')
+      .from('Content')
       .select('*')
-      .eq('id', contentId)
-      .single();
+      .eq('id', contentId);
 
     if (error) {
       console.error('[Supabase] Error fetching content:', error);
       return null;
     }
 
-    console.log('[Supabase] Content found:', data.name);
-    return data;
+    if (!data || data.length === 0) {
+      console.warn('[Supabase] Content not found for ID:', contentId);
+      return null;
+    }
+
+    const content = data[0];
+    console.log('[Supabase] Content found:', content.name);
+    return content;
   } catch (err) {
     console.error('[Supabase] Exception:', err);
     return null;
@@ -110,19 +143,17 @@ export async function getContentById(contentId) {
 export function getModelFileUrl(fileUrl) {
   if (!fileUrl) return null;
   
-  // Wenn bereits absolute URL, return as-is
   if (fileUrl.startsWith('http://') || fileUrl.startsWith('https://')) {
     return fileUrl;
   }
 
-  // Fallback: Baue Storage-URL
   const storageUrl = `${supabaseUrl}/storage/v1/object/public/${fileUrl}`;
   return storageUrl;
 }
 
 /**
  * ===== DETECT MEDIA TYPE FROM CONTENT.TYPE =====
- * Nutzt das type enum aus der DB statt Datei-Extension
+ * Nutzt das type enum aus der DB
  */
 export function getMediaTypeFromContentType(dbType) {
   if (!dbType) return null;
