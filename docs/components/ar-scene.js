@@ -186,35 +186,29 @@ export class ARScene {
   _startQRDetectionLoop() {
     if (this._qrDetectionLoop) cancelAnimationFrame(this._qrDetectionLoop);
     
+    let frameCount = 0;
+    let consecutiveMisses = 0;
+    const maxMisses = 15; // 15 Frames ohne Erkennung = Timeout
+    
     const tick = () => {
       if (!this.useQRMarker || !this.qrTracker) {
         this._qrDetectionLoop = null;
         return;
       }
 
+      // Jeden Frame prüfen (nicht jeden 2.)
       const qrResult = this.qrTracker.detectAndEstimate();
       
       if (qrResult.ok && qrResult.id) {
+        consecutiveMisses = 0;
         this._lastQRSeenTs = performance.now();
 
-        // NEU: Position aus Ecken-Centroid approximieren (ohne solvePnP)
-        if (qrResult.corners) {
-          const centerX = (qrResult.corners[0].x + qrResult.corners[1].x + 
-                           qrResult.corners[2].x + qrResult.corners[3].x) / 4;
-          const centerY = (qrResult.corners[0].y + qrResult.corners[1].y + 
-                           qrResult.corners[2].y + qrResult.corners[3].y) / 4;
-
-          // Simple Projektion auf Z-Ebene
-          const ndcX = (centerX / this.qrTracker.canvas.width) * 2 - 1;
-          const ndcY = -(centerY / this.qrTracker.canvas.height) * 2 + 1;
-          
-          // Dummy Position (Z=1m vor Kamera)
-          const pos = new THREE.Vector3(ndcX * 0.5, ndcY * 0.5, -1.0);
-          const quat = new THREE.Quaternion();
-
+        // NEU: Verwende Pose direkt (mit Distanz!)
+        if (qrResult.pos && qrResult.quat) {
           this._lastQRPose = {
-            pos: pos,
-            quat: quat,
+            pos: qrResult.pos.clone(),
+            quat: qrResult.quat.clone(),
+            distance: qrResult.distance || 1.0,
             ts: performance.now()
           };
         }
@@ -224,8 +218,9 @@ export class ARScene {
 
         const stateEl = document.getElementById('marker-state');
         if (stateEl) { 
-          stateEl.textContent = 'QR Code: erkannt (ohne Pose)'; 
-          stateEl.style.color = '#ffa500'; 
+          const dist = (qrResult.distance || 0).toFixed(2);
+          stateEl.textContent = `QR Code: ✓ ${dist}m`; 
+          stateEl.style.color = '#0f0'; 
         }
         
         if (!this._migratedToVirtual) {
@@ -236,16 +231,17 @@ export class ARScene {
         this._setModelsVisible(true);
         if (this.useDeviceMotion) this.motionTracker.calibrate();
       } else {
-        const age = this._lastQRSeenTs ? (performance.now() - this._lastQRSeenTs) : Infinity;
-        if (age > this._qrPoseTimeoutMs) {
-          this.markerVisible = false;
-          this.markerLostTime = Date.now();
-          const stateEl = document.getElementById('marker-state');
-          if (stateEl) { 
-            stateEl.textContent = 'QR Code: nicht erkannt'; 
-            stateEl.style.color = '#ff0'; 
+        consecutiveMisses++;
+
+        if (consecutiveMisses >= maxMisses) {
+          const age = this._lastQRSeenTs ? (performance.now() - this._lastQRSeenTs) : Infinity;
+          if (age > this._qrPoseTimeoutMs) {
+            if (this.markerVisible) {
+              console.log(`[QR] ${consecutiveMisses} Frames without detection → IMU Fallback`);
+              this._setupIMUFallback();
+              this._setModelsVisible(true);
+            }
           }
-          this._setModelsVisible(false);
         }
       }
 
@@ -504,16 +500,28 @@ export class ARScene {
     });
 
     this.realMarker.addEventListener('markerLost', () => {
-      // NEU: im QR‑Modus ignorieren
-      if (this.useQRMarker) return;
+      // NEU: im QR‑Modus AUCH auf IMU fallback!
+      // (nicht ignorieren, sondern IMU-State setzen)
 
       if (this._lostDebounceTimer) clearTimeout(this._lostDebounceTimer);
       this._lostDebounceTimer = setTimeout(() => {
         this._lostDebounceTimer = null;
 
+        // NEU: Bei QR auch IMU speichern für Fallback
+        if (this.useQRMarker) {
+          console.log('[QR] Lost → Setting up IMU Fallback');
+          this._setupIMUFallback();
+          return; // Nicht weiter mit AR.js-Logik
+        }
+
+        // AR.js Marker-Loss (original)
         this.markerVisible = false;
         this.markerLostTime = Date.now();
-        if (stateEl) { stateEl.textContent = 'Marker: verloren (IMU)'; stateEl.style.color = '#ff0'; }
+        const stateEl = document.getElementById('marker-state');
+        if (stateEl) { 
+          stateEl.textContent = 'Marker: verloren (IMU)'; 
+          stateEl.style.color = '#ff0'; 
+        }
 
         const wm = this.realMarker.object3D;
         const vm = this.virtualMarker.object3D;
@@ -560,6 +568,55 @@ export class ARScene {
         this.realMarker.object3D.visible = false;
       }, 300);
     });
+  }
+
+  // NEU: IMU-Fallback vorbereiten
+  _setupIMUFallback() {
+    const vm = this.virtualMarker.object3D;
+
+    // Aktuelle Marker-Pose einfrieren
+    const markerWorldPos = new THREE.Vector3();
+    const markerWorldQuat = new THREE.Quaternion();
+    vm.getWorldPosition(markerWorldPos);
+    vm.getWorldQuaternion(markerWorldQuat).normalize();
+
+    vm.position.copy(markerWorldPos);
+    vm.quaternion.copy(markerWorldQuat);
+    vm.scale.set(1, 1, 1);
+
+    // Kamera-Pose speichern
+    const cam = document.querySelector('[camera]');
+    if (cam) {
+      cam.object3D.getWorldPosition(this.cameraPositionAtLoss);
+      cam.object3D.getWorldQuaternion(this.cameraQuaternionAtLoss).normalize();
+    }
+
+    // Relative Transform speichern
+    const C0 = new THREE.Matrix4().compose(
+      this.cameraPositionAtLoss.clone(),
+      this.cameraQuaternionAtLoss.clone(),
+      new THREE.Vector3(1,1,1)
+    );
+    const M0 = new THREE.Matrix4().compose(
+      markerWorldPos,
+      markerWorldQuat,
+      new THREE.Vector3(1,1,1)
+    );
+    this.T_camToMarkerAtLoss.copy(C0).invert().multiply(M0);
+
+    if (this.useDeviceMotion) {
+      this.deviceQuaternionAtLoss.copy(this.motionTracker.getQuaternion()).normalize();
+    }
+
+    this.markerVisible = false;
+    this.markerLostTime = Date.now();
+    const stateEl = document.getElementById('marker-state');
+    if (stateEl) { 
+      stateEl.textContent = 'QR Code: verloren → IMU'; 
+      stateEl.style.color = '#ff0'; 
+    }
+
+    this.virtualMarker.object3D.visible = true;
   }
 
   // Cursor je Hand
@@ -755,21 +812,19 @@ export class ARScene {
 
   _loop() {
     const tick = (timestamp) => {
-      // FPS Throttling
       const elapsed = timestamp - this._lastFrameTime;
       
       if (elapsed < this._frameInterval) {
         requestAnimationFrame(tick);
-        return; // Frame überspringen
+        return;
       }
       
-      // Frame durchführen
       this._lastFrameTime = timestamp - (elapsed % this._frameInterval);
       
       const wasVisible = this._lastMarkerVisible;
       const isVisible = this.markerVisible;
 
-      // QR‑Pose priorisieren
+      // QR‑Pose priorisieren (wenn frisch)
       if (this.useQRMarker && this._lastQRPose) {
         const age = performance.now() - this._lastQRPose.ts;
         const isFresh = age <= this._qrPoseTimeoutMs;
@@ -783,50 +838,16 @@ export class ARScene {
             vm.scale.set(1, 1, 1);
           }
           this._setModelsVisible(true);
+        } else {
+          // QR zu alt → automatisch zu IMU wechseln
+          if (this.markerVisible) {
+            this._setupIMUFallback();
+          }
         }
       }
 
-      // NEU: AR.js Marker‑Pose nur anwenden, wenn NICHT im QR‑Modus
-      if (!this.useQRMarker && isVisible && this.realMarker && this.virtualMarker) {
-        const rm = this.realMarker.object3D;
-        const vm = this.virtualMarker.object3D;
-        rm.updateMatrixWorld(true);
-
-        vm.position.copy(rm.getWorldPosition(new THREE.Vector3()));
-        vm.scale.copy(rm.getWorldScale(new THREE.Vector3()));
-        vm.quaternion.identity();
-
-        if (this.currentModel) {
-          // User‑Rotation smoothen
-          this._modelYaw += (this._targetYaw - this._modelYaw) * this._smoothingFactor;
-          this._modelPitch += (this._targetPitch - this._modelPitch) * this._smoothingFactor;
-
-          // User‑Rotation (Yaw + Pitch)
-          const qYaw = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), this._modelYaw);
-          const qPitch = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), this._modelPitch);
-          const qUser = new THREE.Quaternion().multiplyQuaternions(qPitch, qYaw);
-
-          // Marker-Rotation
-          if(this._useMarkerQuat) {
-            const markerQuat = rm.getWorldQuaternion(new THREE.Quaternion()).normalize();
-          }
-
-          // Basis‑Rotation * User‑Rotation
-          const finalQuat = new THREE.Quaternion().multiplyQuaternions(this._baseModelQuat, qUser);
-          if(this._useMarkerQuat) {
-            finalQuat.multiply(markerQuat);
-          }
-          this.currentModel.object3D.quaternion.copy(finalQuat).normalize();
-
-          // Scale
-          this._modelScale += (this._targetScale - this._modelScale) * this._scaleSmoothing;
-          const baseScale = this.currentModel._baseScale || 1;
-          const s = baseScale * this._modelScale;
-          this.currentModel.object3D.scale.set(s, s, s);
-        }
-
-      } else if (!isVisible && this.virtualMarker?.object3D.visible) {
-        // IMU-Tracking
+      // IMU läuft IMMER, wenn Marker nicht sichtbar
+      if (!isVisible && this.virtualMarker?.object3D.visible) {
         const vm = this.virtualMarker.object3D;
         const sceneEl = document.querySelector('a-scene');
         const camEl = sceneEl?.camera ? sceneEl.camera.el : document.querySelector('[camera]');
@@ -854,7 +875,6 @@ export class ARScene {
         vm.quaternion.identity();
         vm.scale.set(1, 1, 1);
 
-        // Smoothed Rotation + Scale anwenden
         if (this.currentModel) {
           this._modelYaw += (this._targetYaw - this._modelYaw) * this._smoothingFactor;
           this._modelPitch += (this._targetPitch - this._modelPitch) * this._smoothingFactor;
@@ -862,7 +882,33 @@ export class ARScene {
           
           this._modelScale += (this._targetScale - this._modelScale) * this._scaleSmoothing;
           const baseScale = this.currentModel._baseScale || 1;
-          const s = baseScale * this._modelScale;
+          const s = baseScale * this._modelScale * this._getModeScaleFactor();
+          this.currentModel.object3D.scale.set(s, s, s);
+        }
+      }
+
+      // AR.js nur wenn NICHT QR
+      if (!this.useQRMarker && isVisible && this.realMarker && this.virtualMarker) {
+        const rm = this.realMarker.object3D;
+        const vm = this.virtualMarker.object3D;
+        rm.updateMatrixWorld(true);
+
+        vm.position.copy(rm.getWorldPosition(new THREE.Vector3()));
+        vm.scale.copy(rm.getWorldScale(new THREE.Vector3()));
+        vm.quaternion.identity();
+
+        if (this.currentModel) {
+          this._modelYaw += (this._targetYaw - this._modelYaw) * this._smoothingFactor;
+          this._modelPitch += (this._targetPitch - this._modelPitch) * this._smoothingFactor;
+          const qYaw = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), this._modelYaw);
+          const qPitch = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), this._modelPitch);
+          const qUser = new THREE.Quaternion().multiplyQuaternions(qPitch, qYaw);
+          const finalQuat = new THREE.Quaternion().multiplyQuaternions(this._baseModelQuat, qUser);
+          this.currentModel.object3D.quaternion.copy(finalQuat).normalize();
+
+          this._modelScale += (this._targetScale - this._modelScale) * this._scaleSmoothing;
+          const baseScale = this.currentModel._baseScale || 1;
+          const s = baseScale * this._modelScale * this._getModeScaleFactor();
           this.currentModel.object3D.scale.set(s, s, s);
         }
       }
@@ -1347,11 +1393,15 @@ export class ARScene {
 
     el._baseScale = baseScale;
 
-    const s = baseScale * this._modelScale;
+    const s = baseScale * this._modelScale * this._getModeScaleFactor();
     el.object3D.scale.set(s, s, s);
 
     el.object3D.visible = this.markerVisible;
 
     console.log(`[Model] Loaded with base scale: ${baseScale}, applied: ${s}`);
+  }
+
+  _getModeScaleFactor() {
+    return this.useQRMarker ? this._qrScaleFactor : 1.0;
   }
 }

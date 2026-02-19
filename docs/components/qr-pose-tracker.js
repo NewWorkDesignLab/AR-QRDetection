@@ -11,27 +11,26 @@ export class QRPoseTracker {
     this.canvas = document.createElement('canvas');
     this.ctx = this.canvas.getContext('2d', { willReadFrequently: true });
     this.K = null;
-    this.hasCV = false; // IMMER false – OpenCV nicht nutzen
+    this.hasCV = false;
     
-    // NEU: Adaptive Canvas-Größe je nach QR-Nähe
-    this._canvasWidth = 480;  // Start kleinere Größe für schnellere Detection
+    this.cvWorker = null;
+    this.cvReady = false;
+    this._solvePnPPromise = null;
+    
+    this._canvasWidth = 480;
     this._canvasHeight = 360;
     
     this._lastValidResult = null;
-    this._smoothingFactor = 0.6; // Etwas weniger Smoothing für schneller Reaktion
-    this._frameSkipCounter = 0;
-    this._targetFrameSkip = 0; // 0 = jeden Frame, 1 = jeden 2. Frame
+    this._smoothingFactor = 0.6;
   }
 
   async init(videoEl, { fovDeg } = {}) {
     this.video = videoEl;
-    if (fovDeg) this.fovDeg = fovDeg;
+    if (fovDeg) this.fovDev = fovDeg;
 
     const w = videoEl.videoWidth || videoEl.width || videoEl.clientWidth || 640;
     const h = videoEl.videoHeight || videoEl.height || videoEl.clientHeight || 480;
     
-    // NEU: Kleinere Canvas für schnellere Verarbeitung
-    // Aber nicht zu klein, sonst verlieren wir QR-Details
     this._canvasWidth = Math.min(480, Math.max(320, w * 0.75));
     this._canvasHeight = Math.floor(this._canvasWidth * (h / w));
     
@@ -43,8 +42,80 @@ export class QRPoseTracker {
     const cy = this._canvasHeight / 2;
     this.K = { fx: f, fy: f, cx, cy };
 
+    // NEU: Initialisiere OpenCV Worker
+    try {
+      await this._initCVWorker();
+    } catch (err) {
+      console.warn('[QR] OpenCV Worker init failed, fallback to jsQR-only:', err);
+    }
+
     console.log(`[QR] Canvas: ${this._canvasWidth}x${this._canvasHeight}, FOV: ${this.fovDeg}°`);
     return true;
+  }
+
+  async _initCVWorker() {
+    return new Promise((resolve, reject) => {
+      try {
+        this.cvWorker = new Worker('./workers/opencv-worker.js');
+        
+        this.cvWorker.onmessage = (e) => {
+          if (e.data.type === 'ready') {
+            this.cvReady = e.data.success;
+            if (this.cvReady) {
+              console.log('[QR] OpenCV Worker ready');
+              resolve();
+            } else {
+              reject(new Error('CV Worker timeout'));
+            }
+          } else if (e.data.type === 'solvePnP') {
+            if (this._solvePnPPromise) {
+              this._solvePnPPromise.resolve(e.data);
+              this._solvePnPPromise = null;
+            }
+          }
+        };
+        
+        this.cvWorker.onerror = (err) => {
+          console.error('[QR] Worker error:', err);
+          reject(err);
+        };
+        
+        // Starte Worker
+        this.cvWorker.postMessage({ type: 'init' });
+        
+        // Timeout nach 10s
+        setTimeout(() => {
+          if (!this.cvReady) {
+            reject(new Error('CV Worker init timeout'));
+          }
+        }, 10000);
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  async _solvePnPWithWorker(corners) {
+    if (!this.cvWorker || !this.cvReady) return null;
+    
+    return new Promise((resolve) => {
+      this._solvePnPPromise = { resolve };
+      
+      this.cvWorker.postMessage({
+        type: 'solvePnP',
+        corners,
+        K: this.K,
+        tagSize: this.tagSize
+      });
+      
+      // Timeout nach 1s
+      setTimeout(() => {
+        if (this._solvePnPPromise) {
+          resolve(null);
+          this._solvePnPPromise = null;
+        }
+      }, 1000);
+    });
   }
 
   // NEU: QR-Größe erkennen & Canvas anpassen
@@ -174,26 +245,46 @@ export class QRPoseTracker {
     }
   }
 
+  // NEU: Schnelle PnP-Estimation OHNE OpenCV (fallback)
+  _estimatePnPFast(corners) {
+    try {
+      const THREE = window.THREE;
+
+      // Kantenlängen in Pixel berechnen (mittlere Kante)
+      const d01 = Math.hypot(corners[1].x - corners[0].x, corners[1].y - corners[0].y);
+      const d12 = Math.hypot(corners[2].x - corners[1].x, corners[2].y - corners[1].y);
+      const d23 = Math.hypot(corners[3].x - corners[2].x, corners[3].y - corners[2].y);
+      const d30 = Math.hypot(corners[0].x - corners[3].x, corners[0].y - corners[3].y);
+      const edgePx = (d01 + d12 + d23 + d30) / 4;
+
+      if (!edgePx || !this.K) return null;
+
+      // Z-Entfernung: Z = (tagSize * fx) / edgePx
+      const z = (this.tagSize * this.K.fx) / edgePx;
+
+      // Centroid
+      const cx = (corners[0].x + corners[1].x + corners[2].x + corners[3].x) / 4;
+      const cy = (corners[0].y + corners[1].y + corners[2].y + corners[3].y) / 4;
+
+      // X/Y in Kamera-Koordinaten
+      const x = (cx - this.K.cx) * (z / this.K.fx);
+      const y = (cy - this.K.cy) * (z / this.K.fy);
+
+      const pos = new THREE.Vector3(x, -y, -z); // -y / -z für A-Frame Kamera
+      const quat = new THREE.Quaternion();
+
+      return { pos, quat, distance: z };
+    } catch (err) {
+      console.warn('[QR] Fast PnP estimation failed:', err);
+      return null;
+    }
+  }
+
   detectAndEstimate() {
     if (!this.video || this.video.readyState !== this.video.HAVE_ENOUGH_DATA) {
       return { ok: false };
     }
 
-    // NEU: Frame-Skip Logik
-    this._frameSkipCounter++;
-    if (this._frameSkipCounter < this._targetFrameSkip + 1) {
-      // Fallback zum letzten Result wenn wir einen Frame überspringen
-      if (this._lastValidResult) {
-        const age = Date.now() - (this._lastValidResult.timestamp || 0);
-        if (age < 100) {
-          return this._lastValidResult;
-        }
-      }
-      return { ok: false };
-    }
-    this._frameSkipCounter = 0;
-
-    // Frame mit HIGH_PERFORMANCE Context zeichnen
     this.ctx.drawImage(this.video, 0, 0, this._canvasWidth, this._canvasHeight);
     const img = this.ctx.getImageData(0, 0, this._canvasWidth, this._canvasHeight);
 
@@ -202,7 +293,6 @@ export class QRPoseTracker {
       return { ok: false };
     }
 
-    // Ecken extrahieren
     const p = res.location;
     let corners = [
       { x: p.topLeftCorner.x,     y: p.topLeftCorner.y },
@@ -217,10 +307,70 @@ export class QRPoseTracker {
 
     corners = this._smoothCorners(corners);
 
-    // OHNE OpenCV: nur ID + Ecken zurückgeben
-    const result = { ok: true, id: res.data, corners, timestamp: Date.now() };
-    this._lastValidResult = result;
+    // NEU: Fast PnP Estimation (IMMER)
+    let poseData = this._estimatePnPFast(corners);
     
-    return result;
+    if (poseData) {
+      const result = { ok: true, id: res.data, corners, 
+        pos: poseData.pos, 
+        quat: poseData.quat,
+        distance: poseData.distance,
+        timestamp: performance.now() 
+      };
+      this._lastValidResult = result;
+      
+      // Asynchron: versuche bessere Pose mit OpenCV Worker
+      if (this.cvReady) {
+        this._tryComputePoseAsync(corners).catch(console.warn);
+      }
+      
+      return result;
+    }
+
+    return { ok: false };
+  }
+
+  // NEU: Asynchrone Pose-Berechnung (überschreibt schnelle Estimation)
+  async _tryComputePoseAsync(corners) {
+    const poseData = await this._solvePnPWithWorker(corners);
+    if (!poseData || !poseData.success) return;
+
+    try {
+      const THREE = window.THREE;
+      const Relems = poseData.R;
+      const tvelem = poseData.t;
+
+      const Rm = new THREE.Matrix3().set(
+        Relems[0], Relems[1], Relems[2],
+        Relems[3], Relems[4], Relems[5],
+        Relems[6], Relems[7], Relems[8]
+      );
+
+      const A3 = new THREE.Matrix3().set(1,0,0, 0,-1,0, 0,0,-1);
+      Rm.premultiply(A3).multiply(A3);
+      
+      const t3 = new THREE.Vector3(tvelem[0], tvelem[1], tvelem[2]).applyMatrix3(A3);
+
+      let M = new THREE.Matrix4();
+      M.makeBasis(
+        new THREE.Vector3(Rm.elements[0], Rm.elements[3], Rm.elements[6]),
+        new THREE.Vector3(Rm.elements[1], Rm.elements[4], Rm.elements[7]),
+        new THREE.Vector3(Rm.elements[2], Rm.elements[5], Rm.elements[8])
+      );
+      M.setPosition(t3);
+
+      const pos = new THREE.Vector3();
+      const quat = new THREE.Quaternion();
+      const scl = new THREE.Vector3();
+      M.decompose(pos, quat, scl);
+
+      // Update letztes Result mit besserer Pose
+      if (this._lastValidResult) {
+        this._lastValidResult.pos = pos;
+        this._lastValidResult.quat = quat;
+      }
+    } catch (err) {
+      console.warn('[QR] Pose compute error:', err);
+    }
   }
 }
