@@ -109,6 +109,21 @@ export class ARScene {
     this._lastQRPose = null;
     this._qrPoseTimeoutMs = 250;
     this._lastQRSeenTs = 0; // NEU: QR gesehen, auch ohne Pose
+
+    // NEU: Fehlende Properties
+    this._qrScaleFactor = 0.1; // ~10x kleiner im QR‑Modus
+    this._handInteractionActive = false; // Flag für aktive Hand-Interaktion
+    
+    this._paused = false;
+
+    // NEU: DOM-Element-Cache
+    this._cachedElements = {
+      scene: null,
+      camera: null,
+      cameraEl: null,
+      markerState: null,
+      canvas: null
+    };
   }
 
   async init() {
@@ -146,6 +161,10 @@ export class ARScene {
     
     this.createVirtualMarker();
     this.setupMarkerPersistence();
+    
+    // NEU: Elemente nach Setup cachen
+    this._cacheElements();
+    
     this._loop();
 
     document.getElementById('info-close')?.addEventListener('click', () => {
@@ -153,6 +172,30 @@ export class ARScene {
     });
 
     this._initTouchControls();
+  }
+
+  // NEU: Cache-Methode
+  _cacheElements() {
+    this._cachedElements.scene = document.querySelector('a-scene');
+    this._cachedElements.markerState = document.getElementById('marker-state');
+    this._cachedElements.canvas = document.querySelector('canvas') || document.body;
+    
+    // Camera wird dynamisch gecacht (kann sich ändern)
+    const sceneEl = this._cachedElements.scene;
+    if (sceneEl?.camera) {
+      this._cachedElements.camera = sceneEl.camera;
+      this._cachedElements.cameraEl = sceneEl.camera.el;
+    } else {
+      this._cachedElements.cameraEl = document.querySelector('[camera]');
+      this._cachedElements.camera = this._cachedElements.cameraEl?.object3D;
+    }
+
+    console.log('[Cache] Elements cached:', {
+      scene: !!this._cachedElements.scene,
+      camera: !!this._cachedElements.camera,
+      markerState: !!this._cachedElements.markerState,
+      canvas: !!this._cachedElements.canvas
+    });
   }
 
   async _initQRTracking(videoEl) {
@@ -216,7 +259,8 @@ export class ARScene {
         this.markerVisible = true;
         this.markerLostTime = null;
 
-        const stateEl = document.getElementById('marker-state');
+        // NEU: Gecachtes Element nutzen
+        const stateEl = this._cachedElements.markerState;
         if (stateEl) { 
           const dist = (qrResult.distance || 0).toFixed(2);
           stateEl.textContent = `QR Code: ✓ ${dist}m`; 
@@ -283,7 +327,7 @@ export class ARScene {
         this.realMarker.object3D.visible = false; // (wird via AR.js gesteuert)
       }
       this.markerVisible = false;
-      const stateEl = document.getElementById('marker-state');
+      const stateEl = this._cachedElements.markerState;
       if (stateEl) { 
         stateEl.textContent = 'Marker: wartend'; 
         stateEl.style.color = '#999'; 
@@ -410,7 +454,7 @@ export class ARScene {
   setupMarkerPersistence() {
     this.realMarker = document.getElementById('hiroMarker');
     const statusBox = document.getElementById('marker-status');
-    const stateEl = document.getElementById('marker-state');
+    const stateEl = this._cachedElements.markerState;
     if (!this.realMarker) return;
     if (statusBox) statusBox.style.display = 'block';
 
@@ -517,7 +561,7 @@ export class ARScene {
         // AR.js Marker-Loss (original)
         this.markerVisible = false;
         this.markerLostTime = Date.now();
-        const stateEl = document.getElementById('marker-state');
+        const stateEl = this._cachedElements.markerState;
         if (stateEl) { 
           stateEl.textContent = 'Marker: verloren (IMU)'; 
           stateEl.style.color = '#ff0'; 
@@ -539,7 +583,7 @@ export class ARScene {
         vm.scale.copy(markerWorldScale);
 
         // Kamera-Pose sichern
-        const cam = document.querySelector('[camera]');
+        const cam = this._cachedElements.cameraEl;
         if (cam) {
           cam.object3D.getWorldPosition(this.cameraPositionAtLoss);
           cam.object3D.getWorldQuaternion(this.cameraQuaternionAtLoss).normalize();
@@ -585,7 +629,7 @@ export class ARScene {
     vm.scale.set(1, 1, 1);
 
     // Kamera-Pose speichern
-    const cam = document.querySelector('[camera]');
+    const cam = this._cachedElements.cameraEl;
     if (cam) {
       cam.object3D.getWorldPosition(this.cameraPositionAtLoss);
       cam.object3D.getWorldQuaternion(this.cameraQuaternionAtLoss).normalize();
@@ -610,7 +654,7 @@ export class ARScene {
 
     this.markerVisible = false;
     this.markerLostTime = Date.now();
-    const stateEl = document.getElementById('marker-state');
+    const stateEl = this._cachedElements.markerState;
     if (stateEl) { 
       stateEl.textContent = 'QR Code: verloren → IMU'; 
       stateEl.style.color = '#ff0'; 
@@ -624,7 +668,11 @@ export class ARScene {
     const i = handIndex ?? 0;
     const v = this._videoToNDC(position);
     this.cursorNDC[i].set(v.x, v.y);
-    this._updateHover(i);
+    
+    // NEU: Nur raycasten wenn Hand aktiv interagiert
+    if (this._handInteractionActive) {
+      this._updateHover(i);
+    }
   }
 
   onPoke({ handIndex, position }) {
@@ -644,6 +692,7 @@ export class ARScene {
     this.cursorNDC[i].copy(centerNDC);
 
     if (state === 'start') {
+      this._handInteractionActive = true; // NEU: Aktiviere Raycasting
       this._rotateStart(i, pc);
       
     } else if (state === 'sound') {
@@ -653,6 +702,7 @@ export class ARScene {
       this._rotateUpdate(i, pc);
       
     } else if (state === 'end') {
+      this._handInteractionActive = false; // NEU: Deaktiviere Raycasting
       this._rotateEnd(i);
       
       if (!silent && !wasTap) {
@@ -672,6 +722,9 @@ export class ARScene {
   }
 
   _updateHover(i) {
+    // NEU: Guard gegen unnötige Raycasts
+    if (!this._handInteractionActive) return;
+    
     const hit = this._raycast(i);
     const prev = this.hoverEl[i];
 
@@ -686,14 +739,14 @@ export class ARScene {
   }
 
   _raycast(i=0) {
-    const sceneEl = document.querySelector('a-scene');
+    const sceneEl = this._cachedElements.scene;
     if (!sceneEl?.camera) return null;
     this.raycaster.setFromCamera(this.cursorNDC[i], sceneEl.camera);
     return this._intersectFirstInteractable();
   }
 
   _raycastAtNDC(ndc) {
-    const sceneEl = document.querySelector('a-scene');
+    const sceneEl = this._cachedElements.scene;
     if (!sceneEl?.camera) return null;
     this.raycaster.setFromCamera(ndc, sceneEl.camera);
     return this._intersectFirstInteractable();
@@ -722,7 +775,7 @@ export class ARScene {
   }
 
   _intersectFirstInteractable() {
-    const sceneEl = document.querySelector('a-scene');
+    const sceneEl = this._cachedElements.scene;
     const meshes = [];
     sceneEl.object3D.traverse(o => { if (o.isMesh) meshes.push(o); });
     const hits = this.raycaster.intersectObjects(meshes, true);
@@ -849,8 +902,7 @@ export class ARScene {
       // IMU läuft IMMER, wenn Marker nicht sichtbar
       if (!isVisible && this.virtualMarker?.object3D.visible) {
         const vm = this.virtualMarker.object3D;
-        const sceneEl = document.querySelector('a-scene');
-        const camEl = sceneEl?.camera ? sceneEl.camera.el : document.querySelector('[camera]');
+        const camEl = this._cachedElements.cameraEl || document.querySelector('[camera]');
         const camObj = camEl?.object3D;
 
         let camPosNow = this.cameraPositionAtLoss.clone();
@@ -1209,7 +1261,7 @@ export class ARScene {
   }
 
   _initTouchControls() {
-    const canvas = document.querySelector('canvas') || document.body;
+    const canvas = this._cachedElements.canvas;
     
     let touchStartTime = 0;
     let touchMoved = false;
@@ -1403,5 +1455,63 @@ export class ARScene {
 
   _getModeScaleFactor() {
     return this.useQRMarker ? this._qrScaleFactor : 1.0;
+  }
+
+  pauseProcessing() {
+    this._paused = true;
+
+    // QR Loop stoppen
+    if (this._qrDetectionLoop) {
+      cancelAnimationFrame(this._qrDetectionLoop);
+      this._qrDetectionLoop = null;
+    }
+
+    // Hand Tracking stoppen
+    this.handTracker?.stopTracking();
+
+    // Kamera-Streams stoppen
+    this._stopVideoStreams();
+
+    console.log('[Perf] Processing paused');
+  }
+
+  async resumeProcessing() {
+    this._paused = false;
+
+    // Kamera wieder sicherstellen
+    await this._ensureARVideoReady();
+
+    const video = document.querySelector('#arjs-video') || this._fallbackVideo || this._videoEl;
+    
+    // NEU: Nur starten wenn HandTracker bereits initialisiert ist
+    if (video && this.handTracker && this.handTracker.handLandmarker) {
+      this.handTracker.startTracking(video);
+    } else if (video) {
+      console.warn('[Perf] HandTracker not initialized, skipping resume');
+    }
+
+    if (this.useQRMarker && this.qrTracker) {
+      this._startQRDetectionLoop();
+    }
+
+    console.log('[Perf] Processing resumed');
+  }
+
+  _stopVideoStreams() {
+    const vids = [
+      document.querySelector('#arjs-video'),
+      this._fallbackVideo,
+      this._videoEl
+    ].filter(Boolean);
+
+    vids.forEach(v => {
+      try {
+        if (v.pause) v.pause();
+        const s = v.srcObject;
+        if (s && s.getTracks) {
+          s.getTracks().forEach(t => t.stop());
+        }
+      } catch {}
+    });
   }
 }

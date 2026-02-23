@@ -46,6 +46,7 @@ export class HandTracker {
     // Grab-Sound Verzögerung
     this.grabSoundTimer = [null, null]; // Timer pro Hand
     this.grabSoundDelay = 150; // ms - warte bevor Sound abgespielt wird
+    this._running = false;
   }
 
   async init(videoElement) {
@@ -72,8 +73,18 @@ export class HandTracker {
   }
 
   startTracking(videoElement) {
+    // NEU: Guard gegen fehlende Initialisierung
+    if (!this.handLandmarker) {
+      console.warn('[HandTracker] Not initialized, cannot start tracking');
+      return;
+    }
+
+    this._running = true;
     let lastVideoTime = -1;
+
     const detectHands = async () => {
+      if (!this._running || !this.handLandmarker) return;
+
       const t = performance.now();
       if (videoElement.currentTime !== lastVideoTime) {
         lastVideoTime = videoElement.currentTime;
@@ -272,6 +283,10 @@ export class HandTracker {
       requestAnimationFrame(detectHands);
     };
     detectHands();
+  }
+
+  stopTracking() {
+    this._running = false;
   }
 
   _setGesture(i, name) {

@@ -170,6 +170,34 @@ async function initARSceneManager() {
   try {
     arScene = new ARScene();
     console.log('[ARScene] Manager ready (not initialized yet)');
+    
+    // NEU: Pause/Resume Events HIER registrieren (nach arScene-Init)
+    document.addEventListener('visibilitychange', () => {
+      if (!arScene) return;
+      if (document.hidden) {
+        console.log('[Perf] Page hidden → pause');
+        arScene.pauseProcessing();
+      } else {
+        console.log('[Perf] Page visible → resume');
+        arScene.resumeProcessing();
+      }
+    });
+
+    // iOS: pagehide / pageshow
+    window.addEventListener('pagehide', () => {
+      if (arScene) {
+        console.log('[Perf] Page hiding (iOS) → pause');
+        arScene.pauseProcessing();
+      }
+    });
+    
+    window.addEventListener('pageshow', () => {
+      if (arScene) {
+        console.log('[Perf] Page showing (iOS) → resume');
+        arScene.resumeProcessing();
+      }
+    });
+    
   } catch (err) {
     console.error('[ARScene] Init error:', err);
   }
