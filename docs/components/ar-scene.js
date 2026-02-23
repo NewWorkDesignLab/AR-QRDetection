@@ -129,7 +129,7 @@ export class ARScene {
   async init() {
     await this.setupARScene();
 
-    this.toggleMarkerMode(true)
+    this.toggleMarkerMode(false); // Starte im AR.js Marker Modus
   }
 
   async setupARScene() {
@@ -452,7 +452,7 @@ export class ARScene {
   }
 
   setupMarkerPersistence() {
-    this.realMarker = document.getElementById('hiroMarker');
+    this.realMarker = document.getElementById('customMarker');
     const statusBox = document.getElementById('marker-status');
     const stateEl = this._cachedElements.markerState;
     if (!this.realMarker) return;
