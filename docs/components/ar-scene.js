@@ -454,7 +454,6 @@ export class ARScene {
   setupMarkerPersistence() {
     this.realMarker = document.getElementById('customMarker');
     const statusBox = document.getElementById('marker-status');
-    const stateEl = this._cachedElements.markerState;
     if (!this.realMarker) return;
     if (statusBox) statusBox.style.display = 'block';
 
@@ -474,7 +473,13 @@ export class ARScene {
       console.log('[ARScene] Marker found');
       this.markerVisible = true;
       this.markerLostTime = null;
-      if (stateEl) { stateEl.textContent = 'Marker: sichtbar (Tracking)'; stateEl.style.color = '#0f0'; }
+      
+      // NEU: Direkt updaten, nicht gecacht
+      const stateEl = document.getElementById('marker-state');
+      if (stateEl) { 
+        stateEl.textContent = 'Marker: sichtbar (Tracking)'; 
+        stateEl.style.color = '#0f0'; 
+      }
       
       // NEU: Basis-Rotation nach Marker-Orientierung setzen
       const orientation = this.motionTracker.detectMarkerOrientationFromDevice();
@@ -483,15 +488,12 @@ export class ARScene {
       if (this._useMarkerQuat) {
         switch (orientation) {
           case 'floor':
-            // Marker liegt auf Boden → Modell steht aufrecht
             this._baseModelQuat.identity();
             break;
           case 'wall':
-            // Marker an Wand → Modell kippt nach vorne (von Wand weg)
             this._baseModelQuat.setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI/2);
             break;
           case 'ceiling':
-            // Marker an Decke → Modell hängt nach unten
             this._baseModelQuat.setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI/2);
             break;
           default:
@@ -500,15 +502,12 @@ export class ARScene {
       } else {
         switch (orientation) {
           case 'floor':
-            // Marker liegt auf Boden → Modell steht aufrecht
             this._baseModelQuat.setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI/2);
             break;
           case 'wall':
-            // Marker an Wand → Modell kippt nach vorne (von Wand weg)
             this._baseModelQuat.identity();
             break;
           case 'ceiling':
-            // Marker an Decke → Modell hängt nach unten
             this._baseModelQuat.setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI/2);
             break;
           default:
@@ -545,8 +544,6 @@ export class ARScene {
 
     this.realMarker.addEventListener('markerLost', () => {
       // NEU: im QR‑Modus AUCH auf IMU fallback!
-      // (nicht ignorieren, sondern IMU-State setzen)
-
       if (this._lostDebounceTimer) clearTimeout(this._lostDebounceTimer);
       this._lostDebounceTimer = setTimeout(() => {
         this._lostDebounceTimer = null;
@@ -555,13 +552,15 @@ export class ARScene {
         if (this.useQRMarker) {
           console.log('[QR] Lost → Setting up IMU Fallback');
           this._setupIMUFallback();
-          return; // Nicht weiter mit AR.js-Logik
+          return;
         }
 
         // AR.js Marker-Loss (original)
         this.markerVisible = false;
         this.markerLostTime = Date.now();
-        const stateEl = this._cachedElements.markerState;
+        
+        // NEU: Direkt updaten
+        const stateEl = document.getElementById('marker-state');
         if (stateEl) { 
           stateEl.textContent = 'Marker: verloren (IMU)'; 
           stateEl.style.color = '#ff0'; 
@@ -583,7 +582,7 @@ export class ARScene {
         vm.scale.copy(markerWorldScale);
 
         // Kamera-Pose sichern
-        const cam = this._cachedElements.cameraEl;
+        const cam = document.querySelector('[camera]');
         if (cam) {
           cam.object3D.getWorldPosition(this.cameraPositionAtLoss);
           cam.object3D.getWorldQuaternion(this.cameraQuaternionAtLoss).normalize();
@@ -1467,7 +1466,9 @@ export class ARScene {
     }
 
     // Hand Tracking stoppen
-    this.handTracker?.stopTracking();
+    if (this.handTracker && this.handTracker._running) {
+      this.handTracker.stopTracking();
+    }
 
     // Kamera-Streams stoppen
     this._stopVideoStreams();
@@ -1477,24 +1478,74 @@ export class ARScene {
 
   async resumeProcessing() {
     this._paused = false;
+    console.log('[Perf] Resuming processing...');
 
-    // Kamera wieder sicherstellen
-    await this._ensureARVideoReady();
+    try {
+      // NEU: Versuche AR.js Video zuerst neu zu starten
+      const arjsVideo = document.querySelector('#arjs-video');
+      
+      if (arjsVideo) {
+        // AR.js Video neu starten
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ 
+            video: { facingMode: 'environment' } 
+          });
+          arjsVideo.srcObject = stream;
+          arjsVideo.muted = true;
+          arjsVideo.playsInline = true;
+          await arjsVideo.play().catch(() => {});
+          this._videoEl = arjsVideo;
+          console.log('[Perf] AR.js video stream restarted');
+        } catch (err) {
+          console.warn('[Perf] AR.js video restart failed:', err);
+        }
+      } else {
+        // Kein AR.js Video → Fallback neu erstellen
+        await this._initFallbackVideo();
+        console.log('[Perf] Fallback video restarted');
+      }
 
-    const video = document.querySelector('#arjs-video') || this._fallbackVideo || this._videoEl;
-    
-    // NEU: Nur starten wenn HandTracker bereits initialisiert ist
-    if (video && this.handTracker && this.handTracker.handLandmarker) {
-      this.handTracker.startTracking(video);
-    } else if (video) {
-      console.warn('[Perf] HandTracker not initialized, skipping resume');
+      // Video-Element holen
+      const video = document.querySelector('#arjs-video') || this._fallbackVideo || this._videoEl;
+      
+      if (!video) {
+        console.warn('[Perf] No video available for resume');
+        return;
+      }
+
+      // Warte bis Video bereit
+      if (video.readyState < 2) {
+        await new Promise(resolve => {
+          video.addEventListener('loadeddata', resolve, { once: true });
+          video.addEventListener('loadedmetadata', resolve, { once: true });
+          setTimeout(resolve, 3000); // Fallback nach 3s
+        });
+      }
+
+      // Hand Tracking neu starten
+      if (this.handTracker?.handLandmarker) {
+        this.handTracker.startTracking(video);
+        console.log('[Perf] Hand tracking restarted');
+      } else if (this.handTracker) {
+        // HandTracker noch nicht initialisiert → komplett neu init
+        try {
+          await this.handTracker.init(video);
+          console.log('[Perf] Hand tracking re-initialized');
+        } catch (e) {
+          console.warn('[Perf] Hand tracking re-init failed:', e);
+        }
+      }
+
+      // QR Loop neu starten
+      if (this.useQRMarker && this.qrTracker) {
+        this._startQRDetectionLoop();
+        console.log('[Perf] QR detection loop restarted');
+      }
+
+      console.log('[Perf] Processing resumed ✓');
+    } catch (err) {
+      console.error('[Perf] Resume error:', err);
     }
-
-    if (this.useQRMarker && this.qrTracker) {
-      this._startQRDetectionLoop();
-    }
-
-    console.log('[Perf] Processing resumed');
   }
 
   _stopVideoStreams() {
@@ -1511,7 +1562,24 @@ export class ARScene {
         if (s && s.getTracks) {
           s.getTracks().forEach(t => t.stop());
         }
+        // NEU: srcObject NICHT nullen – AR.js braucht das Video-Element
+        // v.srcObject = null; // ← Das war das Problem!
       } catch {}
     });
+
+    // NEU: Nur interne Referenzen auf Fallback-Video resetten
+    // AR.js #arjs-video bleibt im DOM!
+    if (this._fallbackVideo) {
+      try {
+        const s = this._fallbackVideo.srcObject;
+        if (s?.getTracks) s.getTracks().forEach(t => t.stop());
+        this._fallbackVideo.srcObject = null;
+        this._fallbackVideo.remove();
+      } catch {}
+      this._fallbackVideo = null;
+    }
+    
+    this._videoEl = null;
+    console.log('[Perf] Video streams stopped');
   }
 }

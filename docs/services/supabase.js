@@ -16,7 +16,16 @@ export async function getProjectByQRCode(qrCode) {
     
     const { data, error } = await supabase
       .from('Project')
-      .select('*')
+      // NEU: Call_To_Action via FK mitladen
+      .select(`
+        *,
+        call_to_action (
+          id,
+          type,
+          label,
+          value
+        )
+      `)
       .eq('qr_code', cleanQrCode);
 
     if (error) {
@@ -37,6 +46,7 @@ export async function getProjectByQRCode(qrCode) {
     }
 
     console.log('[Supabase] Project found:', approvedProject.title);
+    console.log('[Supabase] CTA:', approvedProject.call_to_action); // NEU: Debug
     return approvedProject;
   } catch (err) {
     console.error('[Supabase] Exception:', err);

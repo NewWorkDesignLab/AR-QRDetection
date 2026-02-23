@@ -424,7 +424,7 @@ async function showARScene(qrCodeId) {
 
 /**
  * ===== LOAD AND SHOW MODEL =====
- * QR Code → Project (via qr_code field) → Active Content
+ * QR Code → Project (via qr_code field) → Active Content + CTA
  */
 async function loadAndShowModel(qrCodeId) {
   console.log(`[Model] Loading model for QR code: ${qrCodeId}`);
@@ -437,7 +437,9 @@ async function loadAndShowModel(qrCodeId) {
       arScene.setModelInfo({
         title: 'Demo-Würfel',
         description: 'Dies ist ein Demo-Modell. Scanne einen QR-Code mit einer gültigen ID, um Content zu laden.',
-        meta: { 'Tipp': 'Nutze einen gültigen QR-Code' }
+        meta: { 'Tipp': 'Nutze einen gültigen QR-Code' },
+        ctaLabel: 'Demo CTA',
+        ctaValue: 'https://example.com'
       });
       return;
     }
@@ -453,7 +455,9 @@ async function loadAndShowModel(qrCodeId) {
       arScene.setModelInfo({
         title: 'Projekt nicht gefunden',
         description: `Das Projekt mit QR-Code "${qrCodeId}" wurde nicht gefunden oder ist noch nicht freigegeben.`,
-        meta: { 'QR-Code': qrCodeId }
+        meta: { 'QR-Code': qrCodeId },
+        ctaLabel: null,
+        ctaValue: null
       });
       return;
     }
@@ -469,7 +473,9 @@ async function loadAndShowModel(qrCodeId) {
       arScene.setModelInfo({
         title: project.title,
         description: project.description || 'Kein aktiver Content verfügbar.',
-        meta: { 'Projekt-ID': project.id }
+        meta: { 'Projekt-ID': project.id },
+        ctaLabel: null,
+        ctaValue: null
       });
       return;
     }
@@ -499,10 +505,24 @@ async function loadAndShowModel(qrCodeId) {
       arScene.setModelInfo({
         title: content.name || 'Audio-Datei',
         description: content.description || 'Audio wird nicht in AR angezeigt',
-        meta: {}
+        meta: {},
+        ctaLabel: null,
+        ctaValue: null
       });
       return;
     }
+
+    // NEU: Hole CTA aus Project (falls vorhanden)
+    let ctaLabel = null;
+    let ctaValue = null;
+    
+    if (project.call_to_action) {
+      console.log('[Model] CTA found:', project.call_to_action);
+      ctaLabel = project.call_to_action.label || null;
+      ctaValue = project.call_to_action.value || null;
+    }
+
+    console.log('[Model] CTA:', { label: ctaLabel, value: ctaValue });
 
     // Model-Info anzeigen
     arScene.setModelInfo({
@@ -514,8 +534,9 @@ async function loadAndShowModel(qrCodeId) {
         'Typ': content.type,
         ...(content.meta && typeof content.meta === 'object' ? content.meta : {})
       },
-      ctaLabel: content.cta_label,
-      ctaValue: content.cta_value
+      ctaLabel: ctaLabel,
+      ctaValue: ctaValue,
+      cta: ctaValue
     });
 
   } catch (err) {
@@ -524,7 +545,9 @@ async function loadAndShowModel(qrCodeId) {
     arScene.setModelInfo({
       title: 'Fehler beim Laden',
       description: 'Es gab einen Fehler beim Laden des Modells: ' + err.message,
-      meta: { 'QR-Code': qrCodeId }
+      meta: { 'QR-Code': qrCodeId },
+      ctaLabel: null,
+      ctaValue: null
     });
   }
 }
