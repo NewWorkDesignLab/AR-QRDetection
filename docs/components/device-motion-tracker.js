@@ -67,6 +67,11 @@ export class DeviceMotionTracker {
         this._velDamping = 0.92;
         this._velThreshold = 0.004;
         this._maxVel = 6.0;
+
+
+        this._deviceBeta = null;
+        this._deviceGamma = null;
+        this._rawAlpha = null;
     }
 
     async init() {
@@ -92,6 +97,11 @@ export class DeviceMotionTracker {
     // alpha(z), beta(x), gamma(y) + Screen-Orientation -> Welt-Quaternion
     handleOrientation(event) {
         if (event.alpha == null) return;
+
+        this._deviceBeta = event.beta;
+        this._deviceGamma = event.gamma;
+        this._rawAlpha = event.alpha;
+
         const alpha = THREE.MathUtils.degToRad(event.alpha || 0);  // Z
         const beta  = THREE.MathUtils.degToRad(event.beta  || 0);  // X
         const gamma = THREE.MathUtils.degToRad(event.gamma || 0);  // Y
@@ -165,7 +175,135 @@ export class DeviceMotionTracker {
     getDebugInfo() {
         return {
             pos: { x: this.position.x, y: this.position.y, z: this.position.z },
-            vel: { x: this.velocity.x, y: this.velocity.y, z: this.velocity.z }
+            vel: { x: this.velocity.x, y: this.velocity.y, z: this.velocity.z },
+
+            orientation: {
+                alpha: this._rawAlpha?.toFixed(1),
+                beta: this._deviceBeta?.toFixed(1),
+                gamma: this._deviceGamma?.toFixed(1)
+            }
         };
+    }
+
+    /**
+     * Detektiert Marker-Orientierung basierend auf Device-Neigung + Marker-Normal
+     * @param {THREE.Object3D} markerObject3D - Der Marker (realMarker.object3D)
+     * @returns {'floor'|'wall'|'ceiling'|'unknown'}
+     */
+    detectMarkerOrientation(markerObject3D) {
+        if (!markerObject3D || this._deviceBeta === null) {
+            return 'unknown';
+        }
+
+        // 1. Handy-Neigung auswerten
+        const beta = this._deviceBeta;
+        const handyIsFlat = Math.abs(beta) < 30 || Math.abs(beta - 180) < 30;
+        const handyIsVertical = Math.abs(beta - 90) < 30;
+
+        // 2. Marker-Normale in Weltkoordinaten
+        markerObject3D.updateMatrixWorld(true);
+        const markerUp = new THREE.Vector3(0, 1, 0); // Marker's Y-Achse
+        const markerWorldQuat = new THREE.Quaternion();
+        markerObject3D.getWorldQuaternion(markerWorldQuat);
+        const markerUpWorld = markerUp.clone().applyQuaternion(markerWorldQuat).normalize();
+
+        // 3. Winkel zur Welt-Y-Achse
+        const worldUp = new THREE.Vector3(0, 1, 0);
+        const dot = markerUpWorld.dot(worldUp);
+        const angleToVertical = Math.acos(Math.abs(dot)) * (180 / Math.PI);
+
+        console.log(`[MotionTracker] Beta: ${beta.toFixed(1)}°, Marker↔Vertikale: ${angleToVertical.toFixed(1)}°, dot: ${dot.toFixed(2)}`);
+
+        // 4. Kombinierte Logik
+        if (handyIsFlat && angleToVertical < 35) {
+            // Handy flach + Marker horizontal → Boden oder Decke
+            return dot > 0 ? 'floor' : 'ceiling';
+        } else if (handyIsVertical && angleToVertical > 55) {
+            // Handy aufrecht + Marker vertikal → Wand
+            return 'wall';
+        }
+
+        // 5. Fallback: Nur Marker-Orientierung
+        if (angleToVertical < 35) {
+            return dot > 0 ? 'floor' : 'ceiling';
+        } else if (angleToVertical > 55) {
+            return 'wall';
+        }
+
+        return 'unknown';
+    }
+
+    /**
+     * Detektiert Marker-Orientierung basierend auf Handy-Neigung
+     * Ignoriert Marker-Normale, nutzt nur Device-Orientation
+     * @returns {'floor'|'wall'|'ceiling'|'unknown'}
+     */
+    detectMarkerOrientationFromDevice() {
+        if (this._deviceBeta === null) {
+            return 'unknown';
+        }
+
+        const beta = this._deviceBeta;   // Vorne/Hinten-Neigung
+        const gamma = this._deviceGamma; // Links/Rechts-Neigung
+
+        console.log(`[DeviceOrientation] Beta: ${beta.toFixed(1)}°, Gamma: ${gamma?.toFixed(1)}°`);
+
+        // Beta-Wert-Bereiche korrigiert:
+        // Beta ≈ 0° = Handy horizontal (Kamera nach vorne/hinten)
+        // Beta ≈ 90° = Handy vertikal aufrecht
+        // Beta ≈ -90° = Handy vertikal nach unten geneigt
+        // Beta ≈ 180° oder -180° = Handy auf dem Rücken
+
+        // Handy ist aufrecht/vertikal (Kamera zur Wand)
+        if (Math.abs(beta - 90) < 45 || Math.abs(beta + 90) < 45) {
+            console.log('📱 Handy ist AUFRECHT → Marker an WAND');
+            return 'wall';
+        }
+        
+        // Handy zeigt nach unten (Kamera zum Boden)
+        if (beta > -45 && beta < 45) {
+            console.log('📱 Handy zeigt nach UNTEN → Marker auf BODEN');
+            return 'floor';
+        }
+        
+        // Handy zeigt nach oben (Kamera zur Decke)
+        if (beta < -135 || beta > 135) {
+            console.log('📱 Handy zeigt nach OBEN → Marker an DECKE');
+            return 'ceiling';
+        }
+
+        return 'unknown';
+    }
+
+    /**
+     * Gibt die "Up"-Richtung des Handys in Weltkoordinaten zurück
+     * Das ist die Richtung, die auf dem Display nach "oben" zeigt
+     * @returns {THREE.Vector3} Normalisierter Vektor (zeigt nach "oben" im Raum)
+     */
+    getDeviceUpVector() {
+        // Handy's lokale Y-Achse (zeigt vom Display nach oben)
+        const deviceUp = new THREE.Vector3(0, 1, 0);
+        
+        // In Weltkoordinaten transformieren
+        const worldUp = deviceUp.applyQuaternion(this.orientation);
+        
+        return worldUp.normalize();
+    }
+
+    /**
+     * Gibt Quaternion zurück, die "oben" des Objekts zur "oben" des Handys ausrichtet
+     * @returns {THREE.Quaternion}
+     */
+    getAlignmentQuaternion() {
+        // Welt-Oben (Schwerkraft)
+        const worldUp = new THREE.Vector3(0, 1, 0);
+        
+        // Handy-Oben in Weltkoordinaten
+        const deviceUp = this.getDeviceUpVector();
+        
+        // Quaternion, die worldUp zu deviceUp rotiert
+        const quat = new THREE.Quaternion().setFromUnitVectors(worldUp, deviceUp);
+        
+        return quat.normalize();
     }
 }

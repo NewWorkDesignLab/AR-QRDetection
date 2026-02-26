@@ -8,6 +8,7 @@ if (!THREE) {
 import { DeviceMotionTracker } from './device-motion-tracker.js';
 import { HandTracker } from './hand-tracking.js';
 import { AudioGenerator } from '../services/audio-generator.js';
+import { QRPoseTracker } from './qr-pose-tracker.js';
 
 export class ARScene {
   constructor() {
@@ -52,6 +53,10 @@ export class ARScene {
     this._pitchLimit = Infinity;
     this._rotationSensitivity = 0.9;
 
+    this._baseModelQuat = new THREE.Quaternion(); // Basis-Rotation
+    this._useMarkerQuat = false
+    
+
     // NEU: Smoothing für Rotation
     this._targetYaw = 0;
     this._targetPitch = 0;
@@ -68,7 +73,9 @@ export class ARScene {
     this._currentModelInfo = {
       title: 'Unbekanntes Modell',
       description: 'Keine Beschreibung verfügbar.',
-      meta: {}
+      meta: {},
+      ctaLabel: null,
+      ctaValue: null
     };
 
     // Touch-State
@@ -94,18 +101,40 @@ export class ARScene {
 
     // Audio
     this.audio = new AudioGenerator();
+
+    // QR Marker Toggle
+    this.useQRMarker = false; // ← Toggle zwischen AR.js Marker und QR Code
+    this.qrTracker = null;
+    this._qrDetectionLoop = null;
+    this._lastQRPose = null;
+    this._qrPoseTimeoutMs = 250;
+    this._lastQRSeenTs = 0; // NEU: QR gesehen, auch ohne Pose
+
+    // NEU: Fehlende Properties
+    this._qrScaleFactor = 0.1; // ~10x kleiner im QR‑Modus
+    this._handInteractionActive = false; // Flag für aktive Hand-Interaktion
+    
+    this._paused = false;
+
+    // NEU: DOM-Element-Cache
+    this._cachedElements = {
+      scene: null,
+      camera: null,
+      cameraEl: null,
+      markerState: null,
+      canvas: null
+    };
   }
 
   async init() {
     await this.setupARScene();
+
+    this.toggleMarkerMode(false); // Starte im AR.js Marker Modus
   }
 
   async setupARScene() {
     await this._waitForARCamera(4000);
-
     await this._ensureARVideoReady();
-
-    // iOS: ggf. vor dem Start Motion-Permission anfragen (best effort)
     await this._ensureMotionPermission();
 
     const video = document.querySelector('#arjs-video') || this._fallbackVideo || this._videoEl;
@@ -115,7 +144,6 @@ export class ARScene {
         this.handTracker.on('cursor', (d) => this.onCursor(d));
         this.handTracker.on('poke',   (d) => this.onPoke(d));
         this.handTracker.on('grab',   (d) => this.onGrab(d));
-        // Pinch-Tap → Info-Panel öffnen/schließen
         this.handTracker.on('pinch-tap', (d) => this.onPinchTap(d));
       } catch (e) {
         console.warn('HandTracking Fehler:', e);
@@ -125,17 +153,186 @@ export class ARScene {
     }
 
     this.useDeviceMotion = await this.motionTracker.init();
+    
+    // QR Tracker initialisieren (aber nicht starten)
+    if (this.useQRMarker) {
+      await this._initQRTracking(video);
+    }
+    
     this.createVirtualMarker();
     this.setupMarkerPersistence();
-    this._loop(); // Wichtig: bleibt erhalten für virtuellen Marker
+    
+    // NEU: Elemente nach Setup cachen
+    this._cacheElements();
+    
+    this._loop();
 
-    // Info-Panel Close-Button
     document.getElementById('info-close')?.addEventListener('click', () => {
       this._closeInfoPanel();
     });
 
-    // Touch-Events initialisieren
     this._initTouchControls();
+  }
+
+  // NEU: Cache-Methode
+  _cacheElements() {
+    this._cachedElements.scene = document.querySelector('a-scene');
+    this._cachedElements.markerState = document.getElementById('marker-state');
+    this._cachedElements.canvas = document.querySelector('canvas') || document.body;
+    
+    // Camera wird dynamisch gecacht (kann sich ändern)
+    const sceneEl = this._cachedElements.scene;
+    if (sceneEl?.camera) {
+      this._cachedElements.camera = sceneEl.camera;
+      this._cachedElements.cameraEl = sceneEl.camera.el;
+    } else {
+      this._cachedElements.cameraEl = document.querySelector('[camera]');
+      this._cachedElements.camera = this._cachedElements.cameraEl?.object3D;
+    }
+
+    console.log('[Cache] Elements cached:', {
+      scene: !!this._cachedElements.scene,
+      camera: !!this._cachedElements.camera,
+      markerState: !!this._cachedElements.markerState,
+      canvas: !!this._cachedElements.canvas
+    });
+  }
+
+  async _initQRTracking(videoEl) {
+    try {
+      // NEU: auf OpenCV warten, wenn vorhanden
+      await this._waitForOpenCV(5000);
+
+      this.qrTracker = new QRPoseTracker({ tagSizeMeters: 0.08, fovDeg: 60 });
+      await this.qrTracker.init(videoEl, { fovDeg: 60 });
+      console.log('[QR] QRPoseTracker initialisiert');
+      this._startQRDetectionLoop();
+    } catch (e) {
+      console.warn('[QR] QRPoseTracker Init Fehler:', e);
+      this.useQRMarker = false;
+    }
+  }
+
+  async _waitForOpenCV(timeoutMs = 5000) {
+    if (window.cv && window.cv.Mat) return;
+    await new Promise((resolve, reject) => {
+      const start = performance.now();
+      const tick = () => {
+        if (window.cv && window.cv.Mat) return resolve();
+        if (performance.now() - start > timeoutMs) return resolve(); // ohne CV weiter
+        requestAnimationFrame(tick);
+      };
+      tick();
+    });
+  }
+
+  _startQRDetectionLoop() {
+    if (this._qrDetectionLoop) cancelAnimationFrame(this._qrDetectionLoop);
+    
+    let frameCount = 0;
+    let consecutiveMisses = 0;
+    const maxMisses = 15; // 15 Frames ohne Erkennung = Timeout
+    
+    const tick = () => {
+      if (!this.useQRMarker || !this.qrTracker) {
+        this._qrDetectionLoop = null;
+        return;
+      }
+
+      // Jeden Frame prüfen (nicht jeden 2.)
+      const qrResult = this.qrTracker.detectAndEstimate();
+      
+      if (qrResult.ok && qrResult.id) {
+        consecutiveMisses = 0;
+        this._lastQRSeenTs = performance.now();
+
+        // NEU: Verwende Pose direkt (mit Distanz!)
+        if (qrResult.pos && qrResult.quat) {
+          this._lastQRPose = {
+            pos: qrResult.pos.clone(),
+            quat: qrResult.quat.clone(),
+            distance: qrResult.distance || 1.0,
+            ts: performance.now()
+          };
+        }
+
+        this.markerVisible = true;
+        this.markerLostTime = null;
+
+        // NEU: Gecachtes Element nutzen
+        const stateEl = this._cachedElements.markerState;
+        if (stateEl) { 
+          const dist = (qrResult.distance || 0).toFixed(2);
+          stateEl.textContent = `QR Code: ✓ ${dist}m`; 
+          stateEl.style.color = '#0f0'; 
+        }
+        
+        if (!this._migratedToVirtual) {
+          this.moveEntitiesToVirtualMarker(this.realMarker);
+          this._migratedToVirtual = true;
+        }
+        
+        this._setModelsVisible(true);
+        if (this.useDeviceMotion) this.motionTracker.calibrate();
+      } else {
+        consecutiveMisses++;
+
+        if (consecutiveMisses >= maxMisses) {
+          const age = this._lastQRSeenTs ? (performance.now() - this._lastQRSeenTs) : Infinity;
+          if (age > this._qrPoseTimeoutMs) {
+            if (this.markerVisible) {
+              console.log(`[QR] ${consecutiveMisses} Frames without detection → IMU Fallback`);
+              this._setupIMUFallback();
+              this._setModelsVisible(true);
+            }
+          }
+        }
+      }
+
+      this._qrDetectionLoop = requestAnimationFrame(tick);
+    };
+    
+    this._qrDetectionLoop = requestAnimationFrame(tick);
+  }
+  
+  // Toggle-Funktion
+  toggleMarkerMode(useQR = null) {
+    if (useQR !== null) {
+      this.useQRMarker = useQR;
+    } else {
+      this.useQRMarker = !this.useQRMarker;
+    }
+
+    console.log(`[Mode] Switched to: ${this.useQRMarker ? 'QR Code' : 'AR.js Marker'}`);
+
+    if (this.useQRMarker) {
+      if (!this.qrTracker) {
+        const video = document.querySelector('#arjs-video') || this._fallbackVideo || this._videoEl;
+        this._initQRTracking(video);
+      } else {
+        this._startQRDetectionLoop();
+      }
+      // AR.js Marker deaktivieren
+      if (this.realMarker) {
+        this.realMarker.object3D.visible = false;
+      }
+    } else {
+      // QR Detection stoppen
+      if (this._qrDetectionLoop) {
+        cancelAnimationFrame(this._qrDetectionLoop);
+        this._qrDetectionLoop = null;
+      }
+      // AR.js Marker wieder aktivieren
+      if (this.realMarker) {
+        this.realMarker.object3D.visible = false; // (wird via AR.js gesteuert)
+      }
+      this.markerVisible = false;
+      const stateEl = this._cachedElements.markerState;
+      if (stateEl) { 
+        stateEl.textContent = 'Marker: wartend'; 
+        stateEl.style.color = '#999'; 
+      }
+    }
   }
 
   _waitForARCamera(timeoutMs=4000) {
@@ -255,9 +452,8 @@ export class ARScene {
   }
 
   setupMarkerPersistence() {
-    this.realMarker = document.getElementById('hiroMarker');
+    this.realMarker = document.getElementById('customMarker');
     const statusBox = document.getElementById('marker-status');
-    const stateEl = document.getElementById('marker-state');
     if (!this.realMarker) return;
     if (statusBox) statusBox.style.display = 'block';
 
@@ -266,14 +462,58 @@ export class ARScene {
     this.virtualMarker.object3D.visible = true;
 
     this.realMarker.addEventListener('markerFound', () => {
+      // NEU: im QR‑Modus ignorieren
+      if (this.useQRMarker) return;
+
       if (this._lostDebounceTimer) {
         clearTimeout(this._lostDebounceTimer);
         this._lostDebounceTimer = null;
       }
 
+      console.log('[ARScene] Marker found');
       this.markerVisible = true;
       this.markerLostTime = null;
-      if (stateEl) { stateEl.textContent = 'Marker: sichtbar (Tracking)'; stateEl.style.color = '#0f0'; }
+      
+      // NEU: Direkt updaten, nicht gecacht
+      const stateEl = document.getElementById('marker-state');
+      if (stateEl) { 
+        stateEl.textContent = 'Marker: sichtbar (Tracking)'; 
+        stateEl.style.color = '#0f0'; 
+      }
+      
+      // NEU: Basis-Rotation nach Marker-Orientierung setzen
+      const orientation = this.motionTracker.detectMarkerOrientationFromDevice();
+      console.log(`📍 Marker-Orientierung (Device): ${orientation}`);
+
+      if (this._useMarkerQuat) {
+        switch (orientation) {
+          case 'floor':
+            this._baseModelQuat.identity();
+            break;
+          case 'wall':
+            this._baseModelQuat.setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI/2);
+            break;
+          case 'ceiling':
+            this._baseModelQuat.setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI/2);
+            break;
+          default:
+            this._baseModelQuat.setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI/2);
+        }
+      } else {
+        switch (orientation) {
+          case 'floor':
+            this._baseModelQuat.setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI/2);
+            break;
+          case 'wall':
+            this._baseModelQuat.identity();
+            break;
+          case 'ceiling':
+            this._baseModelQuat.setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI/2);
+            break;
+          default:
+            this._baseModelQuat.identity();
+        }
+      }
 
       // Collider sicherstellen
       this.realMarker.querySelectorAll('.interactable').forEach(el => this._ensureInteractionCollider(el));
@@ -303,13 +543,28 @@ export class ARScene {
     });
 
     this.realMarker.addEventListener('markerLost', () => {
+      // NEU: im QR‑Modus AUCH auf IMU fallback!
       if (this._lostDebounceTimer) clearTimeout(this._lostDebounceTimer);
       this._lostDebounceTimer = setTimeout(() => {
         this._lostDebounceTimer = null;
 
+        // NEU: Bei QR auch IMU speichern für Fallback
+        if (this.useQRMarker) {
+          console.log('[QR] Lost → Setting up IMU Fallback');
+          this._setupIMUFallback();
+          return;
+        }
+
+        // AR.js Marker-Loss (original)
         this.markerVisible = false;
         this.markerLostTime = Date.now();
-        if (stateEl) { stateEl.textContent = 'Marker: verloren (IMU)'; stateEl.style.color = '#ff0'; }
+        
+        // NEU: Direkt updaten
+        const stateEl = document.getElementById('marker-state');
+        if (stateEl) { 
+          stateEl.textContent = 'Marker: verloren (IMU)'; 
+          stateEl.style.color = '#ff0'; 
+        }
 
         const wm = this.realMarker.object3D;
         const vm = this.virtualMarker.object3D;
@@ -358,12 +613,65 @@ export class ARScene {
     });
   }
 
+  // NEU: IMU-Fallback vorbereiten
+  _setupIMUFallback() {
+    const vm = this.virtualMarker.object3D;
+
+    // Aktuelle Marker-Pose einfrieren
+    const markerWorldPos = new THREE.Vector3();
+    const markerWorldQuat = new THREE.Quaternion();
+    vm.getWorldPosition(markerWorldPos);
+    vm.getWorldQuaternion(markerWorldQuat).normalize();
+
+    vm.position.copy(markerWorldPos);
+    vm.quaternion.copy(markerWorldQuat);
+    vm.scale.set(1, 1, 1);
+
+    // Kamera-Pose speichern
+    const cam = this._cachedElements.cameraEl;
+    if (cam) {
+      cam.object3D.getWorldPosition(this.cameraPositionAtLoss);
+      cam.object3D.getWorldQuaternion(this.cameraQuaternionAtLoss).normalize();
+    }
+
+    // Relative Transform speichern
+    const C0 = new THREE.Matrix4().compose(
+      this.cameraPositionAtLoss.clone(),
+      this.cameraQuaternionAtLoss.clone(),
+      new THREE.Vector3(1,1,1)
+    );
+    const M0 = new THREE.Matrix4().compose(
+      markerWorldPos,
+      markerWorldQuat,
+      new THREE.Vector3(1,1,1)
+    );
+    this.T_camToMarkerAtLoss.copy(C0).invert().multiply(M0);
+
+    if (this.useDeviceMotion) {
+      this.deviceQuaternionAtLoss.copy(this.motionTracker.getQuaternion()).normalize();
+    }
+
+    this.markerVisible = false;
+    this.markerLostTime = Date.now();
+    const stateEl = this._cachedElements.markerState;
+    if (stateEl) { 
+      stateEl.textContent = 'QR Code: verloren → IMU'; 
+      stateEl.style.color = '#ff0'; 
+    }
+
+    this.virtualMarker.object3D.visible = true;
+  }
+
   // Cursor je Hand
   onCursor({ handIndex, position }) {
     const i = handIndex ?? 0;
     const v = this._videoToNDC(position);
     this.cursorNDC[i].set(v.x, v.y);
-    this._updateHover(i);
+    
+    // NEU: Nur raycasten wenn Hand aktiv interagiert
+    if (this._handInteractionActive) {
+      this._updateHover(i);
+    }
   }
 
   onPoke({ handIndex, position }) {
@@ -383,6 +691,7 @@ export class ARScene {
     this.cursorNDC[i].copy(centerNDC);
 
     if (state === 'start') {
+      this._handInteractionActive = true; // NEU: Aktiviere Raycasting
       this._rotateStart(i, pc);
       
     } else if (state === 'sound') {
@@ -392,6 +701,7 @@ export class ARScene {
       this._rotateUpdate(i, pc);
       
     } else if (state === 'end') {
+      this._handInteractionActive = false; // NEU: Deaktiviere Raycasting
       this._rotateEnd(i);
       
       if (!silent && !wasTap) {
@@ -411,6 +721,9 @@ export class ARScene {
   }
 
   _updateHover(i) {
+    // NEU: Guard gegen unnötige Raycasts
+    if (!this._handInteractionActive) return;
+    
     const hit = this._raycast(i);
     const prev = this.hoverEl[i];
 
@@ -425,14 +738,14 @@ export class ARScene {
   }
 
   _raycast(i=0) {
-    const sceneEl = document.querySelector('a-scene');
+    const sceneEl = this._cachedElements.scene;
     if (!sceneEl?.camera) return null;
     this.raycaster.setFromCamera(this.cursorNDC[i], sceneEl.camera);
     return this._intersectFirstInteractable();
   }
 
   _raycastAtNDC(ndc) {
-    const sceneEl = document.querySelector('a-scene');
+    const sceneEl = this._cachedElements.scene;
     if (!sceneEl?.camera) return null;
     this.raycaster.setFromCamera(ndc, sceneEl.camera);
     return this._intersectFirstInteractable();
@@ -461,7 +774,7 @@ export class ARScene {
   }
 
   _intersectFirstInteractable() {
-    const sceneEl = document.querySelector('a-scene');
+    const sceneEl = this._cachedElements.scene;
     const meshes = [];
     sceneEl.object3D.traverse(o => { if (o.isMesh) meshes.push(o); });
     const hits = this.raycaster.intersectObjects(meshes, true);
@@ -551,47 +864,44 @@ export class ARScene {
 
   _loop() {
     const tick = (timestamp) => {
-      // FPS Throttling
       const elapsed = timestamp - this._lastFrameTime;
       
       if (elapsed < this._frameInterval) {
         requestAnimationFrame(tick);
-        return; // Frame überspringen
+        return;
       }
       
-      // Frame durchführen
       this._lastFrameTime = timestamp - (elapsed % this._frameInterval);
       
       const wasVisible = this._lastMarkerVisible;
       const isVisible = this.markerVisible;
 
-      if (isVisible && this.realMarker && this.virtualMarker) {
-        const rm = this.realMarker.object3D;
-        const vm = this.virtualMarker.object3D;
-        rm.updateMatrixWorld(true);
+      // QR‑Pose priorisieren (wenn frisch)
+      if (this.useQRMarker && this._lastQRPose) {
+        const age = performance.now() - this._lastQRPose.ts;
+        const isFresh = age <= this._qrPoseTimeoutMs;
 
-        vm.position.copy(rm.getWorldPosition(new THREE.Vector3()));
-        vm.scale.copy(rm.getWorldScale(new THREE.Vector3()));
-        vm.quaternion.identity();
-
-        if (this.currentModel) {
-          // Rotation interpolieren
-          this._modelYaw += (this._targetYaw - this._modelYaw) * this._smoothingFactor;
-          this._modelPitch += (this._targetPitch - this._modelPitch) * this._smoothingFactor;
-          this._applyRotation(this.currentModel, this._modelYaw, this._modelPitch);
-          
-          // Scale interpolieren
-          this._modelScale += (this._targetScale - this._modelScale) * this._scaleSmoothing;
-          const baseScale = this.currentModel._baseScale || 1;
-          const s = baseScale * this._modelScale;
-          this.currentModel.object3D.scale.set(s, s, s);
+        if (isFresh) {
+          this.markerVisible = true;
+          const vm = this.virtualMarker?.object3D;
+          if (vm) {
+            vm.position.copy(this._lastQRPose.pos);
+            vm.quaternion.copy(this._lastQRPose.quat);
+            vm.scale.set(1, 1, 1);
+          }
+          this._setModelsVisible(true);
+        } else {
+          // QR zu alt → automatisch zu IMU wechseln
+          if (this.markerVisible) {
+            this._setupIMUFallback();
+          }
         }
+      }
 
-      } else if (!isVisible && this.virtualMarker?.object3D.visible) {
-        // IMU-Tracking
+      // IMU läuft IMMER, wenn Marker nicht sichtbar
+      if (!isVisible && this.virtualMarker?.object3D.visible) {
         const vm = this.virtualMarker.object3D;
-        const sceneEl = document.querySelector('a-scene');
-        const camEl = sceneEl?.camera ? sceneEl.camera.el : document.querySelector('[camera]');
+        const camEl = this._cachedElements.cameraEl || document.querySelector('[camera]');
         const camObj = camEl?.object3D;
 
         let camPosNow = this.cameraPositionAtLoss.clone();
@@ -616,7 +926,6 @@ export class ARScene {
         vm.quaternion.identity();
         vm.scale.set(1, 1, 1);
 
-        // Smoothed Rotation + Scale anwenden
         if (this.currentModel) {
           this._modelYaw += (this._targetYaw - this._modelYaw) * this._smoothingFactor;
           this._modelPitch += (this._targetPitch - this._modelPitch) * this._smoothingFactor;
@@ -624,7 +933,33 @@ export class ARScene {
           
           this._modelScale += (this._targetScale - this._modelScale) * this._scaleSmoothing;
           const baseScale = this.currentModel._baseScale || 1;
-          const s = baseScale * this._modelScale;
+          const s = baseScale * this._modelScale * this._getModeScaleFactor();
+          this.currentModel.object3D.scale.set(s, s, s);
+        }
+      }
+
+      // AR.js nur wenn NICHT QR
+      if (!this.useQRMarker && isVisible && this.realMarker && this.virtualMarker) {
+        const rm = this.realMarker.object3D;
+        const vm = this.virtualMarker.object3D;
+        rm.updateMatrixWorld(true);
+
+        vm.position.copy(rm.getWorldPosition(new THREE.Vector3()));
+        vm.scale.copy(rm.getWorldScale(new THREE.Vector3()));
+        vm.quaternion.identity();
+
+        if (this.currentModel) {
+          this._modelYaw += (this._targetYaw - this._modelYaw) * this._smoothingFactor;
+          this._modelPitch += (this._targetPitch - this._modelPitch) * this._smoothingFactor;
+          const qYaw = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), this._modelYaw);
+          const qPitch = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), this._modelPitch);
+          const qUser = new THREE.Quaternion().multiplyQuaternions(qPitch, qYaw);
+          const finalQuat = new THREE.Quaternion().multiplyQuaternions(this._baseModelQuat, qUser);
+          this.currentModel.object3D.quaternion.copy(finalQuat).normalize();
+
+          this._modelScale += (this._targetScale - this._modelScale) * this._scaleSmoothing;
+          const baseScale = this.currentModel._baseScale || 1;
+          const s = baseScale * this._modelScale * this._getModeScaleFactor();
           this.currentModel.object3D.scale.set(s, s, s);
         }
       }
@@ -633,7 +968,6 @@ export class ARScene {
       requestAnimationFrame(tick);
     };
     
-    // Starte Loop mit initialem Timestamp
     requestAnimationFrame(tick);
   }
 
@@ -690,6 +1024,84 @@ export class ARScene {
       .forEach(el => { el.object3D.visible = flag; });
   }
 
+  loadMediaFromUrl(url, mediaType, initialScale = 1.0) {
+    const anchor = this.virtualMarker || this.realMarker;
+    if (!anchor) return;
+
+    // Remove loading label from BOTH markers
+    this.realMarker?.querySelectorAll('.loading-label').forEach(n => n.remove());
+    this.virtualMarker?.querySelectorAll('.loading-label').forEach(n => n.remove());
+
+    // Remove old models
+    anchor.querySelectorAll('.model-root').forEach(n => n.remove());
+
+    // Remove old media assets
+    this._cleanupMediaAssets();
+
+    const plane = document.createElement('a-plane');
+    plane.classList.add('interactable', 'model-root');
+    plane.setAttribute('position', '0 0.5 0');
+    plane.setAttribute('rotation', '0 0 0');
+    plane.setAttribute('width', '1');
+    plane.setAttribute('height', '1');
+    plane.setAttribute('material', 'side: double; color: #ffffff; transparent: true');
+
+    const assets = this._ensureAssetsContainer();
+    if (!assets) return;
+
+    const assetId = `media-asset-${Date.now()}`;
+
+    if (mediaType === 'image') {
+      const img = document.createElement('img');
+      img.id = assetId;
+      img.crossOrigin = 'anonymous';
+      img.src = url;
+
+      img.addEventListener('load', () => {
+        const ar = (img.naturalWidth || 1) / (img.naturalHeight || 1);
+        if (ar >= 1) {
+          plane.setAttribute('width', '1');
+          plane.setAttribute('height', (1 / ar).toString());
+        } else {
+          plane.setAttribute('width', ar.toString());
+          plane.setAttribute('height', '1');
+        }
+      }, { once: true });
+
+      assets.appendChild(img);
+      plane.setAttribute('material', `src: #${assetId}; side: double; transparent: true`);
+    }
+
+    if (mediaType === 'video') {
+      const vid = document.createElement('video');
+      vid.id = assetId;
+      vid.crossOrigin = 'anonymous';
+      vid.src = url;
+      vid.loop = true;
+      vid.muted = true;
+      vid.autoplay = true;
+      vid.playsInline = true;
+
+      vid.addEventListener('loadedmetadata', () => {
+        const ar = (vid.videoWidth || 1) / (vid.videoHeight || 1);
+        if (ar >= 1) {
+          plane.setAttribute('width', '1');
+          plane.setAttribute('height', (1 / ar).toString());
+        } else {
+          plane.setAttribute('width', ar.toString());
+          plane.setAttribute('height', '1');
+        }
+        vid.play().catch(() => {});
+      }, { once: true });
+
+      assets.appendChild(vid);
+      plane.setAttribute('material', `src: #${assetId}; side: double; transparent: true`);
+    }
+
+    anchor.appendChild(plane);
+    this._setActiveEntity(plane, initialScale);
+  }
+
   loadModelFromQr(urlOrNull, initialScale = 1.0) {
     const anchor = this.virtualMarker || this.realMarker;
     if (!anchor) return;
@@ -701,29 +1113,6 @@ export class ARScene {
     // Remove old models
     anchor.querySelectorAll('.model-root').forEach(n => n.remove());
 
-    const setActive = (el, baseScale) => {
-      this.currentModel = el;
-      this._ensureInteractionCollider(el);
-      
-      // Reset Rotation
-      this._modelYaw = 0;
-      this._modelPitch = 0;
-      this._targetYaw = 0;
-      this._targetPitch = 0;
-
-      this._modelScale = 1.0  // Interaktiver Multiplikator (bleibt 1.0)
-      this._targetScale = 1.0;
-
-      el._baseScale = baseScale;
-
-      const s = baseScale * this._modelScale;
-      el.object3D.scale.set(s, s, s);
-      
-      el.object3D.visible = this.markerVisible;
-      
-      console.log(`[Model] Loaded with base scale: ${baseScale}, applied: ${s}`);
-    };
-
     if (!urlOrNull) {
       // Demo-Würfel
       const box = document.createElement('a-box');
@@ -732,7 +1121,7 @@ export class ARScene {
       box.setAttribute('position', '0 0.5 0');
       box.setAttribute('scale', '0.5 0.5 0.5');
       anchor.appendChild(box);
-      setActive(box, 0.5); // Demo-Würfel hat festen Scale 0.5
+      this._setActiveEntity(box, 0.5);
       return;
     }
 
@@ -741,8 +1130,6 @@ export class ARScene {
     model.setAttribute('gltf-model', urlOrNull);
     model.setAttribute('position', '0 0 0');
     model.setAttribute('rotation', '0 0 0');
-    
-    // ✅ Initialen Scale aus DB anwenden
     model.setAttribute('scale', `${initialScale} ${initialScale} ${initialScale}`);
     
     anchor.appendChild(model);
@@ -751,7 +1138,7 @@ export class ARScene {
       console.log('[Model] GLTF loaded successfully');
     }, { once: true });
     
-    setActive(model, initialScale);
+    this._setActiveEntity(model, initialScale);
   }
 
   // Mappt Video-Normalized (0..1) auf NDC (-1..1), Y nach oben
@@ -796,17 +1183,29 @@ export class ARScene {
     const title = document.getElementById('info-title');
     const desc = document.getElementById('info-description');
     const meta = document.getElementById('info-meta');
+    const ctaBtn = document.getElementById('info-cta-btn');
 
     if (!panel) return;
 
     title.textContent = this._currentModelInfo.title;
     desc.textContent = this._currentModelInfo.description;
     this.audio.infoOpen();
+
     // Meta-Infos anzeigen
     const metaObj = this._currentModelInfo.meta || {};
     meta.innerHTML = Object.entries(metaObj)
       .map(([k, v]) => `<div><strong>${k}:</strong> ${v}</div>`)
       .join('');
+
+    // CTA Button verwalten
+    if (ctaBtn && this._currentModelInfo.ctaLabel && this._currentModelInfo.ctaValue) {
+      ctaBtn.textContent = this._currentModelInfo.ctaLabel;
+      ctaBtn.classList.remove('hidden');
+      ctaBtn.style.display = 'inline-flex';
+      ctaBtn.onclick = () => this._handleCtaClick(this._currentModelInfo.ctaValue);
+    } else if (ctaBtn) {
+      ctaBtn.classList.add('hidden');
+    }
 
     panel.classList.remove('hidden');
     this._infoPanelOpen = true;
@@ -823,12 +1222,51 @@ export class ARScene {
     this._currentModelInfo = {
       title: info.title || 'Unbekanntes Modell',
       description: info.description || 'Keine Beschreibung verfügbar.',
-      meta: info.meta || {}
+      meta: info.meta || {},
+      ctaLabel: info.ctaLabel || null,
+      ctaValue: info.ctaValue || null
     };
   }
 
+  _handleCtaClick(ctaValue) {
+    if (!ctaValue) return;
+
+    console.log('[CTA] Clicked with value:', ctaValue);
+    this.audio.click();
+
+    // Email
+    if (ctaValue.includes('@') || ctaValue.toLowerCase().startsWith('mailto:')) {
+      const mailtoUrl = ctaValue.startsWith('mailto:') ? ctaValue : `mailto:${ctaValue}`;
+      window.location.href = mailtoUrl;
+      return;
+    }
+
+    // Telefon
+    if (ctaValue.match(/^[\d\s\+\-\(\)]+$/) || ctaValue.toLowerCase().startsWith('tel:')) {
+      const telUrl = ctaValue.startsWith('tel:') ? ctaValue : `tel:${ctaValue.replace(/\s/g, '')}`;
+      window.location.href = telUrl;
+      return;
+    }
+
+    if (ctaValue.toLowerCase().includes('.vcf')) {
+      window.location.href = ctaValue;
+      //window.open(ctaValue, '_blank');
+      return;
+    }
+
+    // URL
+    if (ctaValue.startsWith('http://') || ctaValue.startsWith('https://') || ctaValue.startsWith('www.')) {
+      const url = ctaValue.startsWith('www.') ? `https://${ctaValue}` : ctaValue;
+      window.open(url, '_blank');
+      return;
+    }
+
+    // Fallback
+    window.open(`https://${ctaValue}`, '_blank');
+  }
+
   _initTouchControls() {
-    const canvas = document.querySelector('canvas') || document.body;
+    const canvas = this._cachedElements.canvas;
     
     let touchStartTime = 0;
     let touchMoved = false;
@@ -977,5 +1415,177 @@ export class ARScene {
     }, { passive: true });
 
     console.log('📱 Touch-Controls initialisiert (Rotation + Scale)');
+  }
+
+  _ensureAssetsContainer() {
+    const scene = document.querySelector('a-scene');
+    if (!scene) return null;
+
+    let assets = scene.querySelector('a-assets');
+    if (!assets) {
+      assets = document.createElement('a-assets');
+      scene.appendChild(assets);
+    }
+    return assets;
+  }
+
+  _cleanupMediaAssets() {
+    const assets = document.querySelector('a-assets');
+    if (!assets) return;
+    assets.querySelectorAll('[id^="media-asset-"]').forEach(n => n.remove());
+  }
+
+  _setActiveEntity(el, baseScale) {
+    this.currentModel = el;
+    this._ensureInteractionCollider(el);
+
+    // Reset Rotation
+    this._modelYaw = 0;
+    this._modelPitch = 0;
+    this._targetYaw = 0;
+    this._targetPitch = 0;
+
+    this._modelScale = 1.0;
+    this._targetScale = 1.0;
+
+    el._baseScale = baseScale;
+
+    const s = baseScale * this._modelScale * this._getModeScaleFactor();
+    el.object3D.scale.set(s, s, s);
+
+    el.object3D.visible = this.markerVisible;
+
+    console.log(`[Model] Loaded with base scale: ${baseScale}, applied: ${s}`);
+  }
+
+  _getModeScaleFactor() {
+    return this.useQRMarker ? this._qrScaleFactor : 1.0;
+  }
+
+  pauseProcessing() {
+    this._paused = true;
+
+    // QR Loop stoppen
+    if (this._qrDetectionLoop) {
+      cancelAnimationFrame(this._qrDetectionLoop);
+      this._qrDetectionLoop = null;
+    }
+
+    // Hand Tracking stoppen
+    if (this.handTracker && this.handTracker._running) {
+      this.handTracker.stopTracking();
+    }
+
+    // Kamera-Streams stoppen
+    this._stopVideoStreams();
+
+    console.log('[Perf] Processing paused');
+  }
+
+  async resumeProcessing() {
+    this._paused = false;
+    console.log('[Perf] Resuming processing...');
+
+    try {
+      // NEU: Versuche AR.js Video zuerst neu zu starten
+      const arjsVideo = document.querySelector('#arjs-video');
+      
+      if (arjsVideo) {
+        // AR.js Video neu starten
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ 
+            video: { facingMode: 'environment' } 
+          });
+          arjsVideo.srcObject = stream;
+          arjsVideo.muted = true;
+          arjsVideo.playsInline = true;
+          await arjsVideo.play().catch(() => {});
+          this._videoEl = arjsVideo;
+          console.log('[Perf] AR.js video stream restarted');
+        } catch (err) {
+          console.warn('[Perf] AR.js video restart failed:', err);
+        }
+      } else {
+        // Kein AR.js Video → Fallback neu erstellen
+        await this._initFallbackVideo();
+        console.log('[Perf] Fallback video restarted');
+      }
+
+      // Video-Element holen
+      const video = document.querySelector('#arjs-video') || this._fallbackVideo || this._videoEl;
+      
+      if (!video) {
+        console.warn('[Perf] No video available for resume');
+        return;
+      }
+
+      // Warte bis Video bereit
+      if (video.readyState < 2) {
+        await new Promise(resolve => {
+          video.addEventListener('loadeddata', resolve, { once: true });
+          video.addEventListener('loadedmetadata', resolve, { once: true });
+          setTimeout(resolve, 3000); // Fallback nach 3s
+        });
+      }
+
+      // Hand Tracking neu starten
+      if (this.handTracker?.handLandmarker) {
+        this.handTracker.startTracking(video);
+        console.log('[Perf] Hand tracking restarted');
+      } else if (this.handTracker) {
+        // HandTracker noch nicht initialisiert → komplett neu init
+        try {
+          await this.handTracker.init(video);
+          console.log('[Perf] Hand tracking re-initialized');
+        } catch (e) {
+          console.warn('[Perf] Hand tracking re-init failed:', e);
+        }
+      }
+
+      // QR Loop neu starten
+      if (this.useQRMarker && this.qrTracker) {
+        this._startQRDetectionLoop();
+        console.log('[Perf] QR detection loop restarted');
+      }
+
+      console.log('[Perf] Processing resumed ✓');
+    } catch (err) {
+      console.error('[Perf] Resume error:', err);
+    }
+  }
+
+  _stopVideoStreams() {
+    const vids = [
+      document.querySelector('#arjs-video'),
+      this._fallbackVideo,
+      this._videoEl
+    ].filter(Boolean);
+
+    vids.forEach(v => {
+      try {
+        if (v.pause) v.pause();
+        const s = v.srcObject;
+        if (s && s.getTracks) {
+          s.getTracks().forEach(t => t.stop());
+        }
+        // NEU: srcObject NICHT nullen – AR.js braucht das Video-Element
+        // v.srcObject = null; // ← Das war das Problem!
+      } catch {}
+    });
+
+    // NEU: Nur interne Referenzen auf Fallback-Video resetten
+    // AR.js #arjs-video bleibt im DOM!
+    if (this._fallbackVideo) {
+      try {
+        const s = this._fallbackVideo.srcObject;
+        if (s?.getTracks) s.getTracks().forEach(t => t.stop());
+        this._fallbackVideo.srcObject = null;
+        this._fallbackVideo.remove();
+      } catch {}
+      this._fallbackVideo = null;
+    }
+    
+    this._videoEl = null;
+    console.log('[Perf] Video streams stopped');
   }
 }
