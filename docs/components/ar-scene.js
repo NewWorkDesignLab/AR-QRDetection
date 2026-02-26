@@ -1248,6 +1248,12 @@ export class ARScene {
       return;
     }
 
+    if (ctaValue.toLowerCase().includes('.vcf')) {
+      window.location.href = ctaValue;
+      //window.open(ctaValue, '_blank');
+      return;
+    }
+
     // URL
     if (ctaValue.startsWith('http://') || ctaValue.startsWith('https://') || ctaValue.startsWith('www.')) {
       const url = ctaValue.startsWith('www.') ? `https://${ctaValue}` : ctaValue;
