@@ -203,7 +203,7 @@ async function initARSceneManager() {
   }
 
   // Marker-Events für Hinweis
-  const marker = document.getElementById('hiroMarker');
+  const marker = document.getElementById('customMarker');
   if (marker) {
     let markerVisible = false;
     let lostTimer = null;

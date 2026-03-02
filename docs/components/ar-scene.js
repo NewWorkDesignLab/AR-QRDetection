@@ -839,7 +839,7 @@ export class ARScene {
 
   _findAnchorNode(el) {
     let n = el;
-    while (n && n.id !== 'hiroMarker' && n.id !== 'virtual-marker' && n !== document.querySelector('a-scene')) {
+    while (n && n.id !== 'customMarker' && n.id !== 'virtual-marker' && n !== document.querySelector('a-scene')) {
       n = n.parentElement || n.parentNode?.el || n.parentNode;
     }
     return (n && n.object3D) ? n : document.getElementById('virtual-marker');
