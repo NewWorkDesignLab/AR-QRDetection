@@ -1,4 +1,5 @@
-import { createClient } from '@supabase/supabase-js';
+// Lade Supabase von CDN
+import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
 
 const supabaseUrl = "https://nwhgpnpghhtnnuedddza.supabase.co";
 const supabaseKey = "sb_publishable_LsHgNqBcLJ7VAKrReAgL4g_NYD1gVmG";
